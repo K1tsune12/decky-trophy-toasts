@@ -1,0 +1,11 @@
+{
+  "name": "Decky Trophy Toasts",
+  "author": "K1tsune12",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["notifications", "qol", "customization"],
+    "description": "Big, animated achievement-unlock toasts with themes, effects and extra flair for rare achievements.",
+    "image": ""
+  }
+}
