@@ -12,7 +12,7 @@
 
 import { call } from '@decky/api';
 
-import { getFont, getTheme, resolveAccent, resolveFxColor } from './themes';
+import { getFont, getTheme, resolveAccent, resolveFontStack, resolveFxColor } from './themes';
 import { ToastData, ToastOptions, renderCaptureParts } from './toastWindow';
 
 const RENDER_SCALE = 2;        // rasterization oversampling (crisp when enlarged)
@@ -251,10 +251,14 @@ async function renderCardInner(data: ToastData, opts: ToastOptions): Promise<Car
     // Inlined font first (reliable in the isolated SVG); keep the raw @import as a
     // last-resort fallback in case inlining failed.
     const fontBlock = fontCss || fontImp;
+    // The font-family lives on `.wrap` in buildParts, but we serialize `.cardwrap`
+    // (its child) — so set the family on the SVG root here or the chosen font never
+    // reaches the text. Single-quote the family names to stay valid in the attr.
+    const fontStack = resolveFontStack(getTheme(opts.themeId), opts.font).replace(/"/g, "'");
     const svg =
       `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
       `<foreignObject x="0" y="0" width="${w}" height="${h}">` +
-      `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px;">` +
+      `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px;font-family:${fontStack};">` +
       `<style xmlns="http://www.w3.org/1999/xhtml">${fontBlock}${style}</style>${inner}</div>` +
       `</foreignObject></svg>`;
 
