@@ -361,17 +361,31 @@ def main():
         per = 2 * (w + h)
         seg = per * 0.22                                   # CSS dasharray 22/78
         offset = -((el % 2300.0) / 2300.0) * per           # gline 2.3s
+        bright = (min(1.0, acc[0] + 0.15), min(1.0, acc[1] + 0.15), min(1.0, acc[2] + 0.15))
         cr.save()
+        # Continuous base line with a soft halo (CSS gbase drop-shadow).
+        for width, alpha in ((6.0, 0.08), (3.4, 0.16)):
+            _rrect_path(cr, x, y, w, h, r)
+            cr.set_line_width(width * rscale)
+            cr.set_source_rgba(acc[0], acc[1], acc[2], alpha)
+            cr.stroke()
         _rrect_path(cr, x, y, w, h, r)
-        cr.set_line_width(2.0)
+        cr.set_line_width(1.8)
         cr.set_source_rgba(acc[0], acc[1], acc[2], 0.5)
         cr.stroke()
-        for width, alpha in ((4.0, 0.3), (2.3, 0.98)):
+        # Running bright segment with a STRONG outward bloom expanding past the line
+        # (CSS grun drop-shadow 4/10/18px) — wide, low-alpha layers under a bright core.
+        for width, alpha in ((18.0, 0.07), (12.0, 0.12), (7.0, 0.22), (4.0, 0.42)):
             _rrect_path(cr, x, y, w, h, r)
-            cr.set_line_width(width)
+            cr.set_line_width(width * rscale)
             cr.set_dash([seg, per], offset)
             cr.set_source_rgba(acc[0], acc[1], acc[2], alpha)
             cr.stroke()
+        _rrect_path(cr, x, y, w, h, r)
+        cr.set_line_width(2.3)
+        cr.set_dash([seg, per], offset)
+        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.98)
+        cr.stroke()
         cr.set_dash([], 0)
         cr.restore()
 
@@ -456,32 +470,32 @@ def main():
         # CSS .comet: a 5x16 capsule (white->accent) with a strong soft glow
         # (box-shadow 0 0 10px #fff, 0 0 16px accent), sliding top->bottom down the
         # left edge (comet 2.4s). Glowy + translucent, never a solid block.
-        cw_ = 5.0 * rscale
-        ch_ = 16.0 * rscale
-        glow_r = 16.0 * rscale                                  # box-shadow spread
-        prog = (el % 2400.0) / 2400.0
+        cw_ = 4.0 * rscale
+        ch_ = 15.0 * rscale
+        glow_r = 22.0 * rscale                                  # soft, wide glow spread
+        prog = (el % 2600.0) / 2600.0                           # comet 2.6s
         cy = -18.0 * rscale + prog * (card_h + 18.0 * rscale)   # top:-18px -> 100%
-        if prog < 0.12:
-            a = prog / 0.12
-        elif prog > 0.88:
-            a = max(0.0, (1.0 - prog) / 0.12)
+        if prog < 0.14:
+            a = (prog / 0.14) * 0.9
+        elif prog > 0.86:
+            a = max(0.0, (1.0 - prog) / 0.14) * 0.9
         else:
-            a = 1.0
+            a = 0.9
         cx = 1.0 * rscale + cw_ / 2.0
         cr.save()
         cr.rectangle(0, 0, bar_w + glow_r + 4.0 * rscale, card_h)   # room for the glow
         cr.clip()
-        # soft outer glow: white core -> accent -> transparent (radial falloff).
+        # soft, diffuse glow (the dominant look) — white core -> accent -> transparent.
         rg = cairo.RadialGradient(cx, cy, 0, cx, cy, glow_r)
-        rg.add_color_stop_rgba(0.0, 1, 1, 1, 0.5 * a)
-        rg.add_color_stop_rgba(0.30, accent[0], accent[1], accent[2], 0.3 * a)
+        rg.add_color_stop_rgba(0.0, 1, 1, 1, 0.42 * a)
+        rg.add_color_stop_rgba(0.22, accent[0], accent[1], accent[2], 0.26 * a)
         rg.add_color_stop_rgba(1.0, accent[0], accent[1], accent[2], 0.0)
         cr.set_source(rg)
         cr.paint()
-        # translucent capsule core (soft, not a solid block).
+        # faint translucent core (not a solid block).
         grad = cairo.LinearGradient(0, cy - ch_ / 2, 0, cy + ch_ / 2)
-        grad.add_color_stop_rgba(0.0, 1, 1, 1, 0.8 * a)
-        grad.add_color_stop_rgba(1.0, accent[0], accent[1], accent[2], 0.55 * a)
+        grad.add_color_stop_rgba(0.0, 1, 1, 1, 0.55 * a)
+        grad.add_color_stop_rgba(1.0, accent[0], accent[1], accent[2], 0.28 * a)
         cr.set_source(grad)
         _rrect_path(cr, cx - cw_ / 2, cy - ch_ / 2, cw_, ch_, cw_ / 2)
         cr.fill()

@@ -229,8 +229,8 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
   }
   if (has('glowline') && !isStatic) {
     // Solid continuous outline (gbase) + a bright highlight sliding over it (grun).
-    fxCss += `.glowline .gbase{stroke:${accB};stroke-width:2;opacity:.8;filter:drop-shadow(0 0 2px ${accB});}
-    .glowline .grun{stroke:${accA};stroke-width:2.5;stroke-linecap:round;stroke-dasharray:22 78;filter:drop-shadow(0 0 5px ${accA}) drop-shadow(0 0 11px ${accB});animation:gline 2.3s linear infinite;}
+    fxCss += `.glowline .gbase{stroke:${accB};stroke-width:1.8;opacity:.7;filter:drop-shadow(0 0 3px ${accB}) drop-shadow(0 0 6px ${accB});}
+    .glowline .grun{stroke:${accA};stroke-width:2.5;stroke-linecap:round;stroke-dasharray:22 78;filter:drop-shadow(0 0 4px ${accA}) drop-shadow(0 0 10px ${accB}) drop-shadow(0 0 18px ${accB});animation:gline 2.3s linear infinite;}
     @keyframes gline{from{stroke-dashoffset:0;}to{stroke-dashoffset:-100;}}`;
     glowlineEl += edgeSvg('edgefx glowline', edgeRect('gbase') + edgeRect('grun'));
   }
@@ -247,7 +247,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
     glowlineEl += edgeSvg('edgefx erain', edgeRect('e'));
   }
   if (has('comet') && lay.dir === 'row' && !isStatic) {
-    fxCss += `.comet{position:absolute;left:0;width:5px;height:16px;border-radius:3px;z-index:3;pointer-events:none;background:linear-gradient(180deg,#fff,${accB});box-shadow:0 0 10px #fff,0 0 16px ${accB};animation:comet 2.4s ease-in-out .4s infinite;}@keyframes comet{0%{top:-18px;opacity:0;}12%{opacity:1;}88%{opacity:1;}100%{top:100%;opacity:0;}}`;
+    fxCss += `.comet{position:absolute;left:-1px;width:4px;height:15px;border-radius:3px;z-index:3;pointer-events:none;background:linear-gradient(180deg,${hexToRgba('#ffffff', 0.9)},${hexToRgba(accB, 0.3)});box-shadow:0 0 7px ${hexToRgba(accA, 0.7)},0 0 16px ${hexToRgba(accB, 0.5)},0 0 26px ${hexToRgba(accB, 0.28)};filter:blur(0.6px);opacity:.9;animation:comet 2.6s ease-in-out .4s infinite;}@keyframes comet{0%{top:-18px;opacity:0;}14%{opacity:.9;}86%{opacity:.9;}100%{top:100%;opacity:0;}}`;
     fxEls += '<div class="comet"></div>';
   }
   if (has('flash') && !isStatic) {

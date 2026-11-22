@@ -60,6 +60,7 @@ export function TrophyStudio() {
   const [tab, setTab] = useState('look');
   const [nonce, setNonce] = useState(0);
   const [previewSound, setPreviewSound] = useState(true);
+  const [frameH, setFrameH] = useState(132);
   const [game, setGame] = useState<{ appid: number; name: string } | null>(null);
   const builtins = useBuiltinSounds();
 
@@ -76,9 +77,15 @@ export function TrophyStudio() {
   const bump = () => setNonce((n) => n + 1);
   const update = (patch: Partial<AchSettings>) => setS(saveSettings(patch));
 
+  // Only VISUAL settings affect the preview — key the memo on just those so that
+  // changing sound/volume/duration/threshold never recomputes it (which would
+  // reload the iframe and make the card flash/disappear). nonce forces a replay.
+  const look = tierLook(s, rareTier);
+  const previewKey = JSON.stringify([look, s.width, s.position, s.layout, rareTier, nonce]);
   const html = useMemo(
-    () => renderPreviewHtml(previewData(rareTier), buildOpts(s, rareTier, tierLook(s, rareTier))) + `<!--p${nonce}-->`,
-    [s, rareTier, nonce],
+    () => renderPreviewHtml(previewData(rareTier), buildOpts(s, rareTier, look)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [previewKey],
   );
 
   const applyPreset = (p: Preset) => { setS(saveSettings(presetPatchTier(p, rareTier))); bump(); };
@@ -95,7 +102,7 @@ export function TrophyStudio() {
       try {
         const card = el.contentDocument?.getElementById('card') as HTMLElement | null;
         const h = card ? card.offsetHeight : 0;
-        if (h > 0) el.style.height = `${h + 44}px`;
+        if (h > 0) setFrameH(h + 44);   // state -> survives re-renders, no reset/flicker
       } catch { /* ignore */ }
     };
     measure();
@@ -286,7 +293,7 @@ export function TrophyStudio() {
                 srcDoc={html}
                 scrolling="no"
                 onLoad={fitPreview}
-                style={{ width: previewW, height: 112, border: 'none', borderRadius: 8, background: '#0c0d10', display: 'block', zoom: 0.9 as any }}
+                style={{ width: previewW, height: frameH, border: 'none', borderRadius: 8, background: '#0c0d10', display: 'block', zoom: 0.9 as any }}
               />
             </div>
             <Focusable style={{ display: 'flex', flexDirection: 'column', gap: 8, flex: '0 0 auto' }}>
