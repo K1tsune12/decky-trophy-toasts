@@ -8,6 +8,8 @@
 // pre-warm that per app on game launch so the toast shows with no network wait.
 
 import { t } from './i18n';
+import { enqueueOverlay, overlayDebug } from './overlay';
+import { buildOpts, resolveLook } from './presets';
 import { AchSettings, getSettings } from './settings';
 import { SoundPlayer } from './sound';
 import { ToastData, ToastOptions, ToastWindow } from './toastWindow';
@@ -49,6 +51,7 @@ export class AchievementWatcher {
   private restoreToast?: () => void;
   private restoreSound?: () => void;
   private pctCache = new Map<string, Record<string, number>>();
+  private currentAppId = 0;
 
   constructor(
     private readonly toast: ToastWindow,
@@ -69,13 +72,28 @@ export class AchievementWatcher {
     // pre-warm rarity when a game starts, so unlocks show instantly
     try {
       this.appReg = w.SteamClient?.GameSessions?.RegisterForAppLifetimeNotifications?.((u: any) => {
-        try { if (u?.bRunning && u?.unAppID) void this.ensurePct(u.unAppID); } catch { /* ignore */ }
+        try {
+          if (u?.unAppID && u?.bRunning) { this.currentAppId = u.unAppID; void this.ensurePct(u.unAppID); }
+          else if (u?.unAppID && !u?.bRunning && u.unAppID === this.currentAppId) { this.currentAppId = 0; }
+        } catch { /* ignore */ }
       });
     } catch { /* optional */ }
 
     this.installSuppression();
     // Cross-plugin flag so Decky Sound Toasts skips achievements while we run.
-    w.__kitsuneAchievementToasts = { active: true };
+    // `simulate` doubles as the Preview buttons' action and a safe external hook.
+    w.__kitsuneAchievementToasts = {
+      active: true,
+      simulate: (rare: boolean) => this.simulate(!!rare),
+      preview: (style: any) => this.preview(style || {}),
+      currentGame: () => this.currentGame(),
+      overlayDebug: (rare: boolean) => {
+        const s = getSettings();
+        const pct = rare ? 2.3 : 47.5;
+        const name = rare ? t('toast.sampleRare') : t('toast.sampleCommon');
+        return overlayDebug(this.toData(name, undefined, pct), this.opts(!!rare, s));
+      },
+    };
     return ok;
   }
 
@@ -165,7 +183,11 @@ export class AchievementWatcher {
     const rare = typeof pct === 'number' && isFinite(pct) ? pct < s.rareThreshold : false;
     if (!rare && !s.showForCommon) return;
 
-    this.toast.show(this.toData(ach.name, ach.icon, pct), this.opts(rare, s));
+    const data = this.toData(ach.name, ach.icon, pct);
+    const opts = this.opts(rare, s, appid);
+    // Queue for the over-game overlay (composites above the running game); multiple
+    // unlocks play one at a time, in order. Falls back to our popup window per item.
+    enqueueOverlay(data, opts, () => this.toast.show(data, opts));
   }
 
   private async resolveAchievement(appid: number, p: any): Promise<Resolved> {
@@ -195,28 +217,56 @@ export class AchievementWatcher {
     };
   }
 
-  private opts(rare: boolean, s: AchSettings): ToastOptions {
-    return {
-      rare,
-      durationMs: s.durationMs,
-      width: s.width,
-      position: s.position,
-      layout: s.layout,
-      themeId: rare ? s.themeRare : s.themeCommon,
-      animId: rare ? s.animRare : s.animCommon,
-      accentId: rare ? s.accentRare : s.accentCommon,
-      eyebrow: rare ? t('toast.rareUnlocked') : t('toast.unlocked'),
-      badge: t('toast.rareBadge'),
-      onShow: () => { void this.sound.play(rare); },
-    };
+  private opts(rare: boolean, s: AchSettings, appid?: number): ToastOptions {
+    const o = buildOpts(s, rare, resolveLook(s, rare, appid));
+    o.onShow = () => { void this.sound.play(rare); };
+    return o;
   }
 
-  /** Demo toast for the Test buttons. */
+  /** The currently-running game (for the per-game preset UI), or null. */
+  currentGame(): { appid: number; name: string } | null {
+    const appid = this.currentAppId;
+    if (!appid) return null;
+    let name = '';
+    try { name = (w.appStore?.GetAppOverviewByAppID?.(appid)?.display_name as string) || ''; } catch { /* ignore */ }
+    return { appid, name: name || `App ${appid}` };
+  }
+
+  /** Demo toast for the Test buttons — shows over the game via the overlay helper
+   *  (falls back to our popup window if the overlay can't run). */
   simulate(rare: boolean): void {
     const s = getSettings();
     const pct = rare ? 2.3 : 47.5;
     const name = rare ? t('toast.sampleRare') : t('toast.sampleCommon');
-    this.toast.show(this.toData(name, undefined, pct), this.opts(rare, s));
+    const data = this.toData(name, undefined, pct);
+    const opts = this.opts(rare, s);
+    enqueueOverlay(data, opts, () => this.toast.show(data, opts));
+  }
+
+  /** Preview a specific theme/effect/ambient (doesn't touch saved settings). */
+  preview(style: any): void {
+    const s = getSettings();
+    const rare = !!style.rare;
+    const name = style.name || (rare ? t('toast.sampleRare') : t('toast.sampleCommon'));
+    const pct = typeof style.pct === 'number' ? style.pct : rare ? 2.3 : 47.5;
+    this.toast.show(this.toData(name, style.icon, pct), {
+      rare,
+      durationMs: style.durationMs ?? (rare ? s.durationRareMs : s.durationCommonMs),
+      width: style.width ?? s.width,
+      position: style.position ?? s.position,
+      layout: style.layout ?? s.layout,
+      themeId: style.themeId ?? (rare ? s.themeRare : s.themeCommon),
+      animId: style.animId ?? (rare ? s.animRare : s.animCommon),
+      accentId: style.accentId ?? (rare ? s.accentRare : s.accentCommon),
+      ambient: style.ambient ?? (rare ? s.ambientRare : s.ambientCommon),
+      font: style.font ?? (rare ? s.fontRare : s.fontCommon),
+      fxColor: style.fxColor ?? (rare ? s.fxColorRare : s.fxColorCommon),
+      border: style.border,
+      fx: style.fx ?? (rare ? s.fxRare : s.fxCommon),
+      eyebrow: rare ? t('toast.rareUnlocked') : t('toast.unlocked'),
+      badge: t('toast.rareBadge'),
+      onShow: () => { void this.sound.play(rare); },
+    });
   }
 
   deinit(): void {

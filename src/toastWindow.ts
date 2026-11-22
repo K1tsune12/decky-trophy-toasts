@@ -13,7 +13,7 @@
 //   4. measure the card and shrink the window to fit (full name, any lines)
 //   5. animate out, then SteamClient.BrowserView.Destroy(view) + win.close()
 
-import { ANIMATIONS, getAnim, getTheme, resolveAccent } from './themes';
+import { ANIMATIONS, defaultAmbient, defaultFx, fontImport, getAnim, getTheme, resolveAccent, resolveFontStack, resolveFxColor } from './themes';
 
 const w = window as any;
 
@@ -31,6 +31,16 @@ export interface ToastStyle {
   accentId: string;
   layout: string;
   position: string;
+  /** Ongoing accent color animation; '' = the theme's default. */
+  ambient?: string;
+  /** Font override id; '' = the theme's own font. */
+  font?: string;
+  /** Flash/particle color override (ACCENTS id); '' = each effect's default. */
+  fxColor?: string;
+  /** Animated glowing border ring around the card; undefined = theme default. */
+  border?: boolean;
+  /** Effect ids to render; undefined = sensible defaults by rarity. */
+  fx?: string[];
   /** Localized eyebrow + badge text. */
   eyebrow: string;
   badge: string;
@@ -106,11 +116,23 @@ function esc(s: string): string {
   return String(s ?? '').replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-function buildHtml(data: ToastData, opts: ToastOptions): string {
+/** "#rrggbb" -> "rgba(r,g,b,a)"; passes through anything it can't parse. */
+function hexToRgba(hex: string, a: number): string {
+  const m = /^#?([0-9a-fA-F]{6})$/.exec(String(hex).trim());
+  if (!m) return hex;
+  const n = parseInt(m[1], 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStatic = false): { fontImp: string; style: string; body: string } {
+  const rare = opts.rare;
   const theme = getTheme(opts.themeId);
   const [accA, accB] = resolveAccent(theme, opts.accentId);
   const anim = getAnim(opts.animId);
   const lay = LAYOUTS[opts.layout] || LAYOUTS.standard;
+  const fontStack = resolveFontStack(theme, opts.font);
+  const fontImp = fontImport(opts.font);
+  const fxCol = resolveFxColor(opts.fxColor || ''); // '' = per-effect defaults
   const glow = theme.glow ? `0 0 16px ${theme.glow}` : 'none';
   const allKeyframes = ANIMATIONS.map((a) => `@keyframes kf_${a.id}{${a.keyframes}}`).join('');
 
@@ -122,33 +144,159 @@ function buildHtml(data: ToastData, opts: ToastOptions): string {
     ? `<img class="ic" src="${esc(data.icon)}" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'ic ph',innerHTML:'&#127942;'}))" />`
     : `<div class="ic ph">&#127942;</div>`;
 
-  const accentCss = lay.accentTop
-    ? `.card::before{content:"";position:absolute;left:0;right:0;top:0;height:4px;background:linear-gradient(90deg,${accA},${accB});}`
-    : `.card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px;background:linear-gradient(180deg,${accA},${accB});}`;
+  // Which effects are on (opts.fx overrides the per-theme defaults).
+  const fxSet: string[] = Array.isArray(opts.fx) ? opts.fx : defaultFx(theme.id, rare);
+  const has = (f: string) => fxSet.includes(f);
+  const r8 = Math.min(theme.radius, 8);
+  const rx = theme.radius > 0 ? 3 : 0; // edge-outline corner radius (viewBox units)
+  const edgeRect = (cls: string) => `<rect class="${cls}" x="1" y="1" width="98" height="98" rx="${rx}" pathLength="100"></rect>`;
+  const edgeSvg = (cls: string, inner: string) => `<svg class="${cls}" preserveAspectRatio="none" viewBox="0 0 100 100">${inner}</svg>`;
 
-  const shimmerCss = theme.shimmer
-    ? `.card::after{content:"";position:absolute;top:0;left:-60%;width:40%;height:100%;
-        background:linear-gradient(100deg,transparent,rgba(255,255,255,0.16),transparent);
+  // Ongoing "ambient" color animation on the accent bar (light, CSS-only).
+  const ambient = opts.ambient || defaultAmbient(theme.id);
+  const grad = lay.accentTop ? '90deg' : '180deg';
+  const glowC = theme.glow || 'rgba(255,255,255,0.4)';
+  let barBg = `linear-gradient(${grad},${accA},${accB})`;
+  let barSize = '';
+  const ambAnims: string[] = [];
+  let ambKf = '';
+  if (ambient === 'flow' || ambient === 'flow-pulse') {
+    barBg = `linear-gradient(${grad},${accA},${accB},${accA})`;
+    barSize = lay.accentTop ? 'background-size:300% 100%;' : 'background-size:100% 300%;';
+    const to = lay.accentTop ? '-300% 0' : '0 -300%';
+    ambKf += `@keyframes amb_flow{to{background-position:${to};}}`;
+    ambAnims.push('amb_flow 2.6s linear infinite');
+  }
+  if (ambient === 'hue') {
+    ambKf += '@keyframes amb_hue{to{filter:hue-rotate(360deg);}}';
+    ambAnims.push('amb_hue 4s linear infinite');
+  }
+  if (ambient === 'pulse' || ambient === 'flow-pulse') {
+    ambKf += `@keyframes amb_pulse{0%,100%{box-shadow:0 0 5px ${glowC};}50%{box-shadow:0 0 18px ${glowC};}}`;
+    ambAnims.push('amb_pulse 1.9s ease-in-out infinite');
+  }
+  if (ambient === 'breathe') {
+    ambKf += '@keyframes amb_breathe{0%,100%{opacity:.7;}50%{opacity:1;}}';
+    ambAnims.push('amb_breathe 2.8s ease-in-out infinite');
+  }
+  const barPos = lay.accentTop ? 'left:0;right:0;top:0;height:4px;' : `left:0;top:0;bottom:0;width:${lay.accentTop ? 4 : 5}px;`;
+  const accentCss = has('accentbar')
+    ? `.card::before{content:"";position:absolute;${barPos}background:${barBg};${barSize}${ambAnims.length ? `animation:${ambAnims.join(',')};` : ''}}` + ambKf
+    : '';
+
+  // Shimmer sweep: rare only (the "passing shine" effect). Motion-only -> skip in static.
+  const shimmerCss = rare && !isStatic
+    ? `.card::after{content:"";position:absolute;top:0;left:-60%;width:40%;height:100%;z-index:3;pointer-events:none;
+        background:linear-gradient(100deg,transparent,rgba(255,255,255,0.18),transparent);
         transform:skewX(-18deg);animation:sweep 2.6s ease-in-out .8s infinite;}`
     : '';
+
+  // Animated glowing border ring (rotating conic gradient, masked to the edge).
+  const border = has('border');
+  const borderKf = border ? '@property --tbang{syntax:"<angle>";initial-value:0deg;inherits:false;}@keyframes tbspin{to{--tbang:360deg;}}' : '';
+  const borderCss = border
+    ? `.brd{position:absolute;inset:-1px;border-radius:${theme.radius}px;padding:2px;pointer-events:none;z-index:2;
+        background:conic-gradient(from var(--tbang),${accA},${accB},${accA},${accB},${accA});
+        -webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;
+        mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);mask-composite:exclude;
+        animation:tbspin 3.2s linear infinite;}`
+    : '';
+  const borderEl = border ? '<div class="brd"></div>' : '';
+
+  // Rare: pulsing gold glow around the card.
+  const rareGlowKf = rare
+    ? `@keyframes trglow{0%,100%{box-shadow:inset 0 0 0 1px ${theme.border},0 0 14px rgba(255,197,92,0.42);}50%{box-shadow:inset 0 0 0 1px ${theme.border},0 0 34px rgba(255,197,92,0.72);}}`
+    : '';
+  const cardAnim = `kf_${anim.id} ${anim.timing} both${rare ? ',trglow 2.3s ease-in-out .5s infinite' : ''}`;
 
   const badgeHtml = opts.rare && opts.badge
     ? `<span class="badge">${esc(opts.badge)}</span>` : '';
   const rarityHtml = data.rarityText ? `<div class="rar">${esc(data.rarityText)}</div>` : '';
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>
-  html,body{margin:0;padding:0;width:100%;min-height:100%;background:transparent!important;overflow:hidden;font-family:${theme.font};}
-  .wrap{display:flex;align-items:flex-start;justify-content:center;min-height:100%;padding:10px;box-sizing:border-box;}
+  // Icon wrapper; stamp + shockwave are entrance one-shots on it.
+  const iconFxCss =
+    `.icwrap{position:relative;flex:0 0 auto;display:inline-flex;${lay.dir === 'row' ? 'align-self:flex-start;margin-top:2px;' : ''}${has('stamp') ? 'animation:icstamp .55s cubic-bezier(.2,1.5,.45,1) .08s both;' : ''}}` +
+    (has('stamp') ? '@keyframes icstamp{0%{opacity:0;transform:scale(.4);}60%{transform:scale(1.12);}100%{opacity:1;transform:scale(1);}}' : '') +
+    (has('shockwave') ? `.icwrap::after{content:"";position:absolute;inset:0;border-radius:${r8}px;border:2px solid ${accA};opacity:0;pointer-events:none;animation:shock .8s ease-out .2s both;}@keyframes shock{0%{opacity:.7;transform:scale(1);}100%{opacity:0;transform:scale(1.8);}}` : '');
+
+  let fxCss = '';
+  let fxEls = '';
+  // The glow line lives OUTSIDE the card (which clips), so it never gets cut.
+  let glowlineEl = '';
+  if ((has('glowline') || has('edgepulse') || has('edgerainbow')) && !isStatic) {
+    fxCss += `.edgefx{position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;pointer-events:none;overflow:visible;display:block;}
+    .edgefx rect{fill:none;vector-effect:non-scaling-stroke;}`;
+  }
+  if (has('glowline') && !isStatic) {
+    // Solid continuous outline (gbase) + a bright highlight sliding over it (grun).
+    fxCss += `.glowline .gbase{stroke:${accB};stroke-width:2;opacity:.8;filter:drop-shadow(0 0 2px ${accB});}
+    .glowline .grun{stroke:${accA};stroke-width:2.5;stroke-linecap:round;stroke-dasharray:22 78;filter:drop-shadow(0 0 5px ${accA}) drop-shadow(0 0 11px ${accB});animation:gline 2.3s linear infinite;}
+    @keyframes gline{from{stroke-dashoffset:0;}to{stroke-dashoffset:-100;}}`;
+    glowlineEl += edgeSvg('edgefx glowline', edgeRect('gbase') + edgeRect('grun'));
+  }
+  if (has('edgepulse') && !isStatic) {
+    // Continuous outline whose glow pulses (no travelling segment).
+    fxCss += `.epulse rect{stroke:${accB};stroke-width:2.5;animation:epulse 1.9s ease-in-out infinite;}
+    @keyframes epulse{0%,100%{filter:drop-shadow(0 0 2px ${accB});opacity:.78;}50%{filter:drop-shadow(0 0 6px ${accB}) drop-shadow(0 0 13px ${accA});opacity:1;}}`;
+    glowlineEl += edgeSvg('edgefx epulse', edgeRect('e'));
+  }
+  if (has('edgerainbow') && !isStatic) {
+    // Continuous outline that cycles through colors.
+    fxCss += `.erain rect{stroke:${accB};stroke-width:2.5;filter:drop-shadow(0 0 4px ${accB});animation:erain 4s linear infinite;}
+    @keyframes erain{to{filter:drop-shadow(0 0 5px ${accB}) hue-rotate(360deg);}}`;
+    glowlineEl += edgeSvg('edgefx erain', edgeRect('e'));
+  }
+  if (has('comet') && lay.dir === 'row' && !isStatic) {
+    fxCss += `.comet{position:absolute;left:0;width:5px;height:16px;border-radius:3px;z-index:3;pointer-events:none;background:linear-gradient(180deg,#fff,${accB});box-shadow:0 0 10px #fff,0 0 16px ${accB};animation:comet 2.4s ease-in-out .4s infinite;}@keyframes comet{0%{top:-18px;opacity:0;}12%{opacity:1;}88%{opacity:1;}100%{top:100%;opacity:0;}}`;
+    fxEls += '<div class="comet"></div>';
+  }
+  if (has('flash') && !isStatic) {
+    const flashInner = fxCol ? hexToRgba(fxCol, 0.65) : 'rgba(255,224,150,0.65)';
+    fxCss += `.flash{position:absolute;inset:0;border-radius:inherit;pointer-events:none;z-index:4;background:radial-gradient(circle at 50% 35%,${flashInner},transparent 62%);animation:flashin .75s ease-out both;}@keyframes flashin{0%{opacity:0;}14%{opacity:1;}100%{opacity:0;}}`;
+    fxEls += '<div class="flash"></div>';
+  }
+  if (has('sparkles') && !isStatic) {
+    const sp = [[12, 24], [82, 16], [56, 80], [90, 66], [30, 86], [70, 38]];
+    const dot = fxCol || '#ffe9a8';
+    const g1 = fxCol || '#ffd166';
+    const g2 = fxCol ? hexToRgba(fxCol, 0.6) : 'rgba(255,200,90,0.6)';
+    fxCss += `.spark{position:absolute;width:5px;height:5px;border-radius:50%;background:${dot};box-shadow:0 0 6px ${g1},0 0 10px ${g2};pointer-events:none;z-index:4;animation:twinkle 1.7s ease-in-out infinite;}@keyframes twinkle{0%,100%{opacity:0;transform:scale(.4);}50%{opacity:1;transform:scale(1.1);}}`;
+    fxEls += sp.map((p, i) => `<span class="spark" style="left:${p[0]}%;top:${p[1]}%;animation-delay:${(i * 0.28).toFixed(2)}s;"></span>`).join('');
+  }
+  if (has('stars') && !isStatic) {
+    const st = [[8, 30], [22, 72], [40, 16], [52, 84], [66, 28], [78, 66], [88, 20], [94, 54], [16, 50], [72, 48], [34, 62], [60, 74]];
+    const col = fxCol || '#fff3c4';
+    const g1 = fxCol || '#ffe08a';
+    const g2 = fxCol ? hexToRgba(fxCol, 0.8) : 'rgba(255,210,120,0.8)';
+    fxCss += `.star{position:absolute;color:${col};font-size:12px;line-height:1;pointer-events:none;z-index:4;text-shadow:0 0 6px ${g1},0 0 12px ${g2};animation:startw 1.6s ease-in-out infinite;}@keyframes startw{0%,100%{opacity:0;transform:scale(.3) rotate(0deg);}50%{opacity:1;transform:scale(1) rotate(28deg);}}`;
+    fxEls += st.map((p, i) => `<span class="star" style="left:${p[0]}%;top:${p[1]}%;animation-delay:${(i * 0.15).toFixed(2)}s;">✦</span>`).join('');
+  }
+  if (has('glint') && !isStatic) {
+    fxCss += `.glint{position:absolute;top:-20%;left:-35%;width:26%;height:140%;z-index:3;pointer-events:none;transform:rotate(18deg);background:linear-gradient(90deg,transparent,rgba(255,255,255,0.55),transparent);filter:blur(1px);animation:glint 1.2s ease-in .25s both;}@keyframes glint{0%{left:-35%;}100%{left:135%;}}`;
+    fxEls += '<div class="glint"></div>';
+  }
+  if (has('confetti') && !isStatic) {
+    const cols = fxCol ? [fxCol] : ['#ffd166', '#ff7a1a', '#4fb6ff', '#9cff9c', '#ff6ad0', '#c89cff'];
+    const cx = [10, 24, 38, 52, 66, 80, 92];
+    fxCss += `.conf{position:absolute;top:-10px;width:6px;height:9px;z-index:4;pointer-events:none;opacity:0;animation:conf 1.5s ease-in both;}@keyframes conf{0%{top:-10px;opacity:0;transform:rotate(0);}10%{opacity:1;}100%{top:112%;opacity:0;transform:rotate(380deg);}}`;
+    fxEls += cx.map((x, i) => `<span class="conf" style="left:${x}%;background:${cols[i % cols.length]};animation-delay:${(i * 0.07).toFixed(2)}s;"></span>`).join('');
+  }
+
+  const style = `
+  .wrap{display:flex;align-items:center;justify-content:center;min-height:100%;padding:14px;box-sizing:border-box;font-family:${fontStack};}
+  .cardwrap{position:relative;width:100%;}
   .card{position:relative;display:flex;flex-direction:${lay.dir};align-items:center;gap:${lay.gap}px;
     padding:${lay.pad};width:100%;box-sizing:border-box;overflow:hidden;border-radius:${theme.radius}px;
-    background:${theme.cardBg};
-    ${theme.blur ? `-webkit-backdrop-filter:blur(${theme.blur}px) saturate(1.2);backdrop-filter:blur(${theme.blur}px) saturate(1.2);` : ''}
+    background:${opaque ? `${theme.cardBg},rgba(7,8,11,0.82)` : theme.cardBg};
+    ${!opaque && theme.blur ? `-webkit-backdrop-filter:blur(${theme.blur}px) saturate(1.2);backdrop-filter:blur(${theme.blur}px) saturate(1.2);` : ''}
     box-shadow:inset 0 0 0 1px ${theme.border}${glow !== 'none' ? ',' + glow : ''};
-    animation:kf_${anim.id} ${anim.timing} both;}
+    animation:${cardAnim};}
   ${accentCss}
+  ${borderCss}
   .card.out{animation:kf_out .34s ease-in forwards;}
   ${shimmerCss}
-  .ic{flex:0 0 auto;width:${lay.iconSize}px;height:${lay.iconSize}px;border-radius:${Math.min(theme.radius, 8)}px;object-fit:cover;box-shadow:${theme.iconFrame};${lay.dir === 'row' ? 'align-self:flex-start;margin-top:2px;' : ''}}
+  ${borderKf}${rareGlowKf}
+  .ic{display:block;width:${lay.iconSize}px;height:${lay.iconSize}px;border-radius:${Math.min(theme.radius, 8)}px;object-fit:cover;box-shadow:${theme.iconFrame};}
   .ic.ph{display:flex;align-items:center;justify-content:center;font-size:${Math.round(lay.iconSize * 0.58)}px;background:radial-gradient(circle at 35% 30%,rgba(255,255,255,0.14),rgba(255,255,255,0.03));}
   .txt{display:flex;flex-direction:column;gap:2px;min-width:0;text-align:${lay.textAlign};${lay.dir === 'column' ? 'align-items:center;' : ''}}
   .eb{font-size:${lay.eyebrowPx}px;font-weight:700;letter-spacing:2px;text-transform:uppercase;${eyebrowStyle}}
@@ -159,14 +307,55 @@ function buildHtml(data: ToastData, opts: ToastOptions): string {
   @keyframes kf_out{to{opacity:0;transform:translateY(-22px) scale(.98);}}
   @keyframes sweep{0%{left:-60%;}60%,100%{left:130%;}}
   ${allKeyframes}
-  </style></head><body><div class="wrap"><div class="card" id="card">
-    ${iconHtml}
-    <div class="txt">
-      <div class="eb">${esc(opts.eyebrow)}${badgeHtml}</div>
-      <div class="nm">${esc(data.name)}</div>
-      ${rarityHtml}
+  ${iconFxCss}
+  ${fxCss}
+  ${isStatic ? `.cardwrap,.cardwrap *,.card,.card::before,.card::after,.icwrap::before,.icwrap::after{animation:none!important;}${rare ? `.card{box-shadow:inset 0 0 0 1px ${theme.border},0 0 26px rgba(255,197,92,0.6)!important;}` : ''}` : ''}
+  `;
+  const body = `<div class="wrap"><div class="cardwrap">
+    <div class="card" id="card">
+      ${borderEl}
+      ${fxEls}
+      <div class="icwrap">${iconHtml}</div>
+      <div class="txt">
+        <div class="eb">${esc(opts.eyebrow)}${badgeHtml}</div>
+        <div class="nm">${esc(data.name)}</div>
+        ${rarityHtml}
+      </div>
     </div>
-  </div></div></body></html>`;
+    ${glowlineEl}
+  </div></div>`;
+  return { fontImp, style, body };
+}
+
+const DOC_RESET = 'html,body{margin:0;padding:0;width:100%;min-height:100%;overflow:hidden;}';
+
+/** Full HTML document for the popup window / preview iframe. */
+export function renderToastHtml(data: ToastData, opts: ToastOptions): string {
+  const { fontImp, style, body } = buildParts(data, opts);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${fontImp}${DOC_RESET}html,body{background:transparent!important;}${style}</style></head><body>${body}</body></html>`;
+}
+
+/** In-panel preview: same card on a dark backdrop so translucent themes read. */
+export function renderPreviewHtml(data: ToastData, opts: ToastOptions): string {
+  const { fontImp, style, body } = buildParts(data, opts);
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${fontImp}${DOC_RESET}html,body{background:linear-gradient(135deg,#1b1d22,#0c0d10)!important;}${style}</style></head><body>${body}</body></html>`;
+}
+
+/** Style + markup fragment for injection into a Shadow DOM (the over-game
+ *  notification body). No <html>/<body> — the host element is the container. */
+export function renderCardFragment(data: ToastData, opts: ToastOptions): string {
+  const { fontImp, style, body } = buildParts(data, opts, true); // opaque: backdrop-filter doesn't composite in the overlay layer
+  return `<style>${fontImp}:host{display:block;}${style}</style>${body}`;
+}
+
+/** Opaque, STATIC card parts for off-screen rasterization into a PNG that the
+ *  over-game overlay helper displays. Static = no motion-only effects and all
+ *  animations frozen at their resting visible state (the overlay is a still
+ *  image; moving effects can't composite over the game). Rendered natively via
+ *  an SVG <foreignObject> (see overlay.ts) for full fidelity. `fontImp` is the
+ *  @import rule, returned separately so the caller can inline the web font. */
+export function renderCaptureParts(data: ToastData, opts: ToastOptions, animated = false): { fontImp: string; style: string; body: string } {
+  return buildParts(data, opts, true, !animated); // opaque; static unless animated (flipbook frames)
 }
 
 export class ToastWindow {
@@ -200,7 +389,7 @@ export class ToastWindow {
       const yFor = (h: number) => (atBottom ? Math.max(margin, dims.height - h - margin) : margin);
 
       const win: Window | null = w.open(url, name, 'top=0,left=0,width=2,height=2,resizable=yes,status=0,toolbar=0,menubar=0,location=0');
-      if (win) { win.document.write(buildHtml(data, opts)); win.document.close(); }
+      if (win) { win.document.write(renderToastHtml(data, opts)); win.document.close(); }
       try { view.SetBounds(x, yFor(maxH), W, maxH); } catch { /* ignore */ }
       try { view.SetVisible(true); } catch { /* ignore */ }
       try { view.SetWindowStackingOrder(1); } catch { /* ignore */ }
@@ -216,7 +405,7 @@ export class ToastWindow {
           const card = win?.document?.getElementById('card');
           const h = card ? (card as HTMLElement).offsetHeight : 0;
           if (h > 0) {
-            const fh = Math.min(maxH, h + 22);
+            const fh = Math.min(maxH, h + 44);
             view.SetBounds(x, yFor(fh), W, fh);
           }
         } catch { /* ignore */ }

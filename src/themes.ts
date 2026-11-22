@@ -178,6 +178,157 @@ export const ACCENTS: { id: string; name: string; colors: [string, string] }[] =
   { id: 'white', name: 'White / Silver', colors: ['#ffffff', '#b9bec7'] },
 ];
 
+/** Ongoing "ambient" color animations for the accent (light, CSS-only). */
+export const AMBIENTS: { id: string; name: string }[] = [
+  { id: 'none', name: 'None' },
+  { id: 'flow', name: 'Gradient flow' },
+  { id: 'hue', name: 'Color cycle (rainbow)' },
+  { id: 'pulse', name: 'Glow pulse' },
+  { id: 'flow-pulse', name: 'Flow + pulse' },
+  { id: 'breathe', name: 'Breathe (soft)' },
+];
+
+/**
+ * Selectable effects (CSS-only), grouped so conflicting ones can't stack.
+ * - `outline`   : drawn on the card edge — only ONE at a time (they overlap).
+ * - `particles` : a particle layer — only ONE at a time (stacking is noisy + heavy).
+ * - `flair`     : cheap, mostly one-shot accents — combine freely.
+ */
+/**
+ * Font override per tier. System stacks (sans/serif/mono) always work offline;
+ * the "display" fonts are pulled from Google Fonts on demand (the toast falls
+ * back to the stack if offline). '' keeps the theme's own font.
+ */
+export interface FontDef {
+  id: string;
+  name: string;
+  stack: string;
+  /** Google Fonts CSS URL to @import when this font is chosen. */
+  import?: string;
+}
+
+export const FONTS: FontDef[] = [
+  { id: '', name: 'Theme default', stack: '' },
+  { id: 'sans', name: 'Steam Sans', stack: '"Motiva Sans","Segoe UI",system-ui,sans-serif' },
+  { id: 'serif', name: 'Serif', stack: 'Georgia,"Noto Serif","Times New Roman",serif' },
+  { id: 'mono', name: 'Monospace', stack: '"Consolas","DejaVu Sans Mono",monospace' },
+  { id: 'orbitron', name: 'Orbitron (futuristic)', stack: '"Orbitron","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Orbitron:wght@500;800&display=swap' },
+  { id: 'russo', name: 'Russo One (bold)', stack: '"Russo One","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Russo+One&display=swap' },
+  { id: 'audiowide', name: 'Audiowide (tech)', stack: '"Audiowide","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Audiowide&display=swap' },
+  { id: 'press', name: 'Press Start 2P (pixel)', stack: '"Press Start 2P",monospace', import: 'https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap' },
+  { id: 'cinzel', name: 'Cinzel (epic)', stack: '"Cinzel",Georgia,serif', import: 'https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&display=swap' },
+  { id: 'nunito', name: 'Nunito (rounded)', stack: '"Nunito","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap' },
+  { id: 'teko', name: 'Teko (condensed)', stack: '"Teko","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Teko:wght@500;700&display=swap' },
+];
+
+export function getFont(id: string): FontDef | undefined {
+  return FONTS.find((f) => f.id === id);
+}
+/** The font-family stack for a theme, honoring an optional override id. */
+export function resolveFontStack(theme: Theme, id?: string): string {
+  const f = id ? getFont(id) : undefined;
+  return f && f.stack ? f.stack : theme.font;
+}
+/** The @import rule needed for a font override, or '' for none. */
+export function fontImport(id?: string): string {
+  const f = id ? getFont(id) : undefined;
+  return f && f.import ? `@import url('${f.import}');` : '';
+}
+
+export type EffectGroup = 'outline' | 'particles' | 'flair';
+
+export interface EffectDef {
+  id: string;
+  name: string;
+  group: EffectGroup;
+}
+
+export const EFFECTS: EffectDef[] = [
+  // Outline (exclusive) — all render on the card border
+  { id: 'border', name: 'Static border', group: 'outline' },
+  { id: 'glowline', name: 'Glow trail (running)', group: 'outline' },
+  { id: 'edgepulse', name: 'Glow edge (pulsing)', group: 'outline' },
+  { id: 'edgerainbow', name: 'Glow edge (rainbow)', group: 'outline' },
+  // Particles (exclusive) — each is its own particle layer
+  { id: 'sparkles', name: 'Sparkles', group: 'particles' },
+  { id: 'stars', name: 'Stars', group: 'particles' },
+  { id: 'confetti', name: 'Confetti', group: 'particles' },
+  // Flair (combine freely)
+  { id: 'accentbar', name: 'Accent bar (side)', group: 'flair' },
+  { id: 'comet', name: 'Comet streak', group: 'flair' },
+  { id: 'stamp', name: 'Icon pop', group: 'flair' },
+  { id: 'glint', name: 'Light glint', group: 'flair' },
+  { id: 'shockwave', name: 'Shockwave', group: 'flair' },
+  { id: 'flash', name: 'Entrance flash', group: 'flair' },
+];
+
+/** Effect groups that allow only a single selection at a time. */
+export const EXCLUSIVE_GROUPS: EffectGroup[] = ['outline', 'particles'];
+
+export function effectGroup(id: string): EffectGroup | undefined {
+  return EFFECTS.find((e) => e.id === id)?.group;
+}
+export function effectsInGroup(group: EffectGroup): EffectDef[] {
+  return EFFECTS.filter((e) => e.group === group);
+}
+/** The current single choice for an exclusive group ('' = none). */
+export function groupChoice(fx: string[], group: EffectGroup): string {
+  return fx.find((id) => effectGroup(id) === group) ?? '';
+}
+/** Replace the selection for an exclusive group ('' clears it). */
+export function setGroupChoice(fx: string[], group: EffectGroup, id: string): string[] {
+  const kept = fx.filter((x) => effectGroup(x) !== group);
+  return id ? [...kept, id] : kept;
+}
+/** Drop unknown ids and enforce one-per-exclusive-group (latest wins). */
+export function sanitizeFx(fx: string[]): string[] {
+  if (!Array.isArray(fx)) return [];
+  const taken = new Set<EffectGroup>();
+  const out: string[] = [];
+  for (let i = fx.length - 1; i >= 0; i--) {
+    const g = effectGroup(fx[i]);
+    if (!g) continue;
+    if (EXCLUSIVE_GROUPS.includes(g)) {
+      if (taken.has(g)) continue;
+      taken.add(g);
+    }
+    out.unshift(fx[i]);
+  }
+  return out;
+}
+
+/** Whether a theme shows the animated glowing border ring by default. */
+export function defaultBorder(id: string): boolean {
+  return id === 'arcade-neon';
+}
+
+/** Default enabled effects for a tier (used for first run). */
+export function defaultFx(themeId: string, rare: boolean): string[] {
+  const fx = ['accentbar', 'stamp', 'shockwave', 'comet'];
+  if (defaultBorder(themeId)) fx.push('border');
+  if (rare) {
+    fx.push('glint', 'flash', 'sparkles');
+    if (!defaultBorder(themeId)) fx.push('glowline');
+  }
+  return sanitizeFx(fx);
+}
+
+/** The default ambient animation per theme (used unless overridden). */
+export function defaultAmbient(id: string): string {
+  switch (id) {
+    case 'arcade-neon': return 'hue';
+    case 'kitsune-gold': return 'pulse';
+    case 'royal': return 'flow-pulse';
+    case 'crimson': return 'pulse';
+    case 'frost': return 'breathe';
+    case 'emerald': return 'flow';
+    case 'kitsune-glass': return 'flow';
+    case 'retro': return 'flow';
+    case 'platinum': return 'breathe';
+    default: return 'none';
+  }
+}
+
 export function getTheme(id: string): Theme {
   return THEMES.find((t) => t.id === id) ?? THEMES[0];
 }
@@ -191,4 +342,12 @@ export function resolveAccent(theme: Theme, overrideId: string): [string, string
     if (a && a.colors[0]) return a.colors;
   }
   return theme.accent;
+}
+
+/** A single solid color for the flash/particle effects from an ACCENTS id
+ *  ('' = keep each effect's own default color). */
+export function resolveFxColor(id: string): string {
+  if (!id) return '';
+  const a = ACCENTS.find((x) => x.id === id);
+  return a && a.colors[0] ? a.colors[0] : '';
 }

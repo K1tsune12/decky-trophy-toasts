@@ -5,7 +5,7 @@
   "api_version": 1,
   "publish": {
     "tags": ["notifications", "qol", "customization"],
-    "description": "Big, animated achievement-unlock toasts with themes, effects and extra flair for rare achievements.",
+    "description": "Big, animated achievement-unlock toasts (Xbox/PS-style) with a full Studio: live preview, ready-made presets, themes, fonts, effects, colors, per-game presets and extra flair for rare achievements.",
     "image": ""
   }
 }

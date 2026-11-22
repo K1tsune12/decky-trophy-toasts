@@ -21,11 +21,20 @@ completely different. 🦊
 
 - 🪟 **Its own toast window** — not Steam's tiny notification. A custom, composited window that can be
   big, positioned anywhere, animated, and themed — appearing **over the game** in Game Mode.
+- 🎛️ **Studio with live preview** — a full settings page (open it from the panel or the ⚙️ icon next to
+  the name) that **previews the toast as you tweak it**. Split into a **Visual** tab (per-tier look) and a
+  **General** tab (shared settings), with a pinned preview and a **Replay** (with optional sound).
+- 🎁 **Presets** — ready-made looks applied in one tap: hand-tuned combos (*Kitsune*, *Clean & Subtle*,
+  *Big Party*, *Neon Arcade*) **plus one per theme**. Applied to the selected tier so you never lose the other.
 - 💎 **Rarity aware** — uses Steam's public global unlock %. An achievement is *rare* below a threshold
   you set (default **10%**, Steam's own cutoff). Rare toasts get a gold accent, a **RARE** badge, a
   gold icon frame and a shimmer.
-- 🎨 **Themes & layouts** — **10 themes**, **4 layouts**, **9 entrance effects**, **6 screen positions**,
-  and a custom accent color — all set **separately for common and rare** unlocks.
+- 🎨 **Deeply customizable** — **10 themes**, **4 layouts**, **9 entrance effects**, **6 screen positions**,
+  accent color, **grouped effects** (one outline + one particle style + free "flair"), and an
+  **effect color** for the flash and particles — all set **separately for common and rare** unlocks.
+- 🔤 **Fonts** — pick a font per tier: system stacks plus display fonts (Orbitron, Russo One, Audiowide,
+  Press Start 2P, Cinzel, Nunito, Teko).
+- 🎮 **Per-game presets** — give specific games their own look; everything else uses your default.
 - 🔊 **Sounds** — separate, configurable sounds for common and rare (bundled sounds or your own files),
   with per-sound and master volume.
 - 🔕 **Replaces Steam's popup** — optionally hides Steam's small achievement toast and native sound so
@@ -33,6 +42,9 @@ completely different. 🦊
 - 📝 **Full name, always** — long names wrap to as many lines as needed; the toast sizes to fit.
   Adjustable on-screen duration, and a **queue** so several unlocks play one after another.
 - 🌍 **Languages** — English and Brazilian Portuguese, following the system language by default.
+
+> ℹ️ The display fonts are pulled from Google Fonts on demand (cached after first use). Offline, the
+> toast falls back to a system font automatically.
 
 ## 🎨 Themes
 

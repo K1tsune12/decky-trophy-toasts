@@ -3,6 +3,8 @@
 // Stored in localStorage: SteamUI keeps it across sessions and it avoids a
 // backend round-trip for something this small.
 
+import { defaultFx, sanitizeFx } from './themes';
+
 /** A configurable sound slot (normal or rare). Empty path = use the bundled default. */
 export interface SoundSlot {
   /** Play a sound for this tier at all. */
@@ -22,8 +24,10 @@ export interface AchSettings {
   showForCommon: boolean;
   /** An achievement is "rare" when its global unlock % is below this (Steam's own cutoff is 10). */
   rareThreshold: number;
-  /** How long the toast stays on screen, milliseconds. */
-  durationMs: number;
+  /** How long a common toast stays on screen, milliseconds. */
+  durationCommonMs: number;
+  /** How long a rare toast stays on screen, milliseconds (match it to your rare sound). */
+  durationRareMs: number;
   /** Toast width in logical px (height adapts to content). */
   width: number;
 
@@ -44,12 +48,26 @@ export interface AchSettings {
   accentCommon: string;
   /** Accent-color override id for rare ('' = theme default). */
   accentRare: string;
+  /** Ongoing accent color animation ('' = theme default). */
+  ambientCommon: string;
+  ambientRare: string;
+  /** Font override id ('' = theme default). */
+  fontCommon: string;
+  fontRare: string;
+  /** Flash + particle color override (ACCENTS id; '' = each effect's default). */
+  fxColorCommon: string;
+  fxColorRare: string;
+  /** Enabled effect ids per tier (see themes.ts EFFECTS). */
+  fxCommon: string[];
+  fxRare: string[];
   /** Sound for common unlocks. */
   soundCommon: SoundSlot;
   /** Sound for rare unlocks. */
   soundRare: SoundSlot;
   /** Master volume, 0..100, scales both slots. */
   masterVolume: number;
+  /** Per-game look override: appid -> preset id (see presets.ts). */
+  gamePresets: Record<string, string>;
   /** Log each achievement event to the console (calibration aid). */
   debug: boolean;
 }
@@ -63,7 +81,8 @@ export const DEFAULT_SETTINGS: AchSettings = {
   suppressNative: true,
   showForCommon: true,
   rareThreshold: 10,
-  durationMs: 10000,
+  durationCommonMs: 10000,
+  durationRareMs: 11000,
   width: 500,
   position: 'top-center',
   layout: 'standard',
@@ -73,9 +92,18 @@ export const DEFAULT_SETTINGS: AchSettings = {
   animRare: 'pop',
   accentCommon: '',
   accentRare: '',
+  ambientCommon: '',
+  ambientRare: '',
+  fontCommon: '',
+  fontRare: '',
+  fxColorCommon: '',
+  fxColorRare: '',
+  fxCommon: defaultFx('kitsune-glass', false),
+  fxRare: defaultFx('kitsune-gold', true),
   soundCommon: slot('builtin:chime'),
   soundRare: slot('builtin:marimba'),
   masterVolume: 100,
+  gamePresets: {},
   debug: false,
 };
 
@@ -85,12 +113,18 @@ type Listener = (s: AchSettings) => void;
 const listeners = new Set<Listener>();
 let cache: AchSettings | null = null;
 
-function hydrate(raw: Partial<AchSettings>): AchSettings {
+function hydrate(raw: Partial<AchSettings> & { durationMs?: number }): AchSettings {
+  const legacy = typeof raw.durationMs === 'number' ? raw.durationMs : undefined;
   return {
     ...DEFAULT_SETTINGS,
     ...raw,
+    durationCommonMs: raw.durationCommonMs ?? legacy ?? DEFAULT_SETTINGS.durationCommonMs,
+    durationRareMs: raw.durationRareMs ?? (legacy ? legacy + 1000 : DEFAULT_SETTINGS.durationRareMs),
+    fxCommon: sanitizeFx(Array.isArray(raw.fxCommon) ? raw.fxCommon : DEFAULT_SETTINGS.fxCommon),
+    fxRare: sanitizeFx(Array.isArray(raw.fxRare) ? raw.fxRare : DEFAULT_SETTINGS.fxRare),
     soundCommon: { ...DEFAULT_SETTINGS.soundCommon, ...(raw.soundCommon ?? {}) },
     soundRare: { ...DEFAULT_SETTINGS.soundRare, ...(raw.soundRare ?? {}) },
+    gamePresets: raw.gamePresets && typeof raw.gamePresets === 'object' ? raw.gamePresets : {},
   };
 }
 
@@ -119,6 +153,15 @@ export function saveSlot(which: 'soundCommon' | 'soundRare', patch: Partial<Soun
   cache = next;
   persist(next);
   return next;
+}
+
+/** Assign (or clear, with '') a per-game preset and persist. */
+export function setGamePreset(appid: number | string, presetId: string): AchSettings {
+  const cur = getSettings();
+  const next = { ...cur.gamePresets };
+  if (presetId) next[String(appid)] = presetId;
+  else delete next[String(appid)];
+  return saveSettings({ gamePresets: next });
 }
 
 /** Final playback volume (0..1) for a slot volume, after the master volume. */
