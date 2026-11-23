@@ -5,7 +5,7 @@
 // per game (resolved at unlock time by appid, with the default as fallback).
 
 import { tr } from './i18n';
-import { AchSettings } from './settings';
+import { AchSettings, getSettings } from './settings';
 import { ToastOptions } from './toastWindow';
 import { THEMES, defaultAmbient, defaultFx, sanitizeFx } from './themes';
 
@@ -24,8 +24,10 @@ export interface Preset {
   id: string;
   name: string;
   builtin?: boolean;
-  common: LookTier;
-  rare: LookTier;
+  /** Which tiers this preset carries. Built-ins are 'both' (common + rare). */
+  scope?: 'common' | 'rare' | 'both';
+  common?: LookTier;
+  rare?: LookTier;
 }
 
 function tier(theme: string, anim: string, ambient: string, fx: string[], accent = '', font = '', fxColor = ''): LookTier {
@@ -78,12 +80,32 @@ export function themePresets(): Preset[] {
   }));
 }
 
-export function allPresets(): Preset[] {
+/** Built-in presets only (curated + one per theme). */
+export function builtinPresets(): Preset[] {
   return [...CURATED, ...themePresets()];
+}
+
+/** User-saved presets (per-tier or master), newest first. */
+export function customPresets(): Preset[] {
+  try { return [...getSettings().customPresets].reverse(); } catch { return []; }
+}
+
+/** All presets: user-saved first, then built-ins. */
+export function allPresets(): Preset[] {
+  return [...customPresets(), ...builtinPresets()];
 }
 
 export function findPreset(id: string): Preset | undefined {
   return allPresets().find((p) => p.id === id);
+}
+
+/** A preset's look for a tier, if it carries that tier (built-ins carry both). */
+export function presetLook(p: Preset, rare: boolean): LookTier | undefined {
+  return rare ? p.rare : p.common;
+}
+/** Presets that provide a look for the given tier (for the per-tier pickers). */
+export function presetsForTier(rare: boolean): Preset[] {
+  return allPresets().filter((p) => !!presetLook(p, rare));
 }
 
 /** The global default look for a tier (from the saved settings). */
@@ -99,13 +121,15 @@ export function tierLook(s: AchSettings, rare: boolean): LookTier {
   };
 }
 
-/** The look to use for a tier, honoring a per-game preset when one is set. */
+/** The look to use for a tier, honoring a per-game preset (per tier) when set. */
 export function resolveLook(s: AchSettings, rare: boolean, appid?: number | string): LookTier {
   if (appid != null && appid !== 0) {
-    const id = s.gamePresets?.[String(appid)];
+    const g = s.gamePresets?.[String(appid)];
+    const id = g && (rare ? g.rare : g.common);
     if (id) {
       const p = findPreset(id);
-      if (p) return rare ? p.rare : p.common;
+      const look = p && presetLook(p, rare);
+      if (look) return look;
     }
   }
   return tierLook(s, rare);
@@ -131,9 +155,11 @@ export function buildOpts(s: AchSettings, rare: boolean, look: LookTier): ToastO
   };
 }
 
-/** Patch that applies a preset's look to ONE tier only (keeps the other tier). */
+/** Patch that applies a preset's look to ONE tier only (keeps the other tier).
+ *  Returns {} if the preset doesn't carry that tier. */
 export function presetPatchTier(p: Preset, rare: boolean): Partial<AchSettings> {
-  const look = rare ? p.rare : p.common;
+  const look = presetLook(p, rare);
+  if (!look) return {};
   return rare
     ? { themeRare: look.theme, animRare: look.anim, accentRare: look.accent, ambientRare: look.ambient, fontRare: look.font, fxColorRare: look.fxColor, fxRare: look.fx }
     : { themeCommon: look.theme, animCommon: look.anim, accentCommon: look.accent, ambientCommon: look.ambient, fontCommon: look.font, fxColorCommon: look.fxColor, fxCommon: look.fx };

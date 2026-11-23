@@ -245,20 +245,20 @@ export interface EffectDef {
 
 export const EFFECTS: EffectDef[] = [
   // Outline (exclusive) — all render on the card border
-  { id: 'border', name: 'Static border', group: 'outline' },
-  { id: 'glowline', name: 'Glow trail (running)', group: 'outline' },
-  { id: 'edgepulse', name: 'Glow edge (pulsing)', group: 'outline' },
-  { id: 'edgerainbow', name: 'Glow edge (rainbow)', group: 'outline' },
+  { id: 'border', name: 'Solid border', group: 'outline' },
+  { id: 'glowline', name: 'Border glow — running', group: 'outline' },
+  { id: 'edgepulse', name: 'Border glow — pulsing', group: 'outline' },
+  { id: 'edgerainbow', name: 'Border glow — rainbow', group: 'outline' },
   // Particles (exclusive) — each is its own particle layer
   { id: 'sparkles', name: 'Sparkles', group: 'particles' },
   { id: 'stars', name: 'Stars', group: 'particles' },
   { id: 'confetti', name: 'Confetti', group: 'particles' },
   // Flair (combine freely)
-  { id: 'accentbar', name: 'Accent bar (side)', group: 'flair' },
-  { id: 'comet', name: 'Comet streak', group: 'flair' },
-  { id: 'stamp', name: 'Icon pop', group: 'flair' },
-  { id: 'glint', name: 'Light glint', group: 'flair' },
-  { id: 'shockwave', name: 'Shockwave', group: 'flair' },
+  { id: 'accentbar', name: 'Left accent bar', group: 'flair' },
+  { id: 'comet', name: 'Comet (down the bar)', group: 'flair' },
+  { id: 'stamp', name: 'Icon pop (on entrance)', group: 'flair' },
+  { id: 'glint', name: 'Diagonal shine', group: 'flair' },
+  { id: 'shockwave', name: 'Ring around icon', group: 'flair' },
   { id: 'flash', name: 'Entrance flash', group: 'flair' },
 ];
 

@@ -3,15 +3,15 @@
 // split across native Tabs (Look = per-tier appearance; General = shared) so the
 // controller's L1/R1 tab switching behaves correctly.
 
-import { ButtonItem, DialogButton, Focusable, Navigation, PanelSection, PanelSectionRow, SliderField, Tabs, ToggleField } from '@decky/ui';
+import { ButtonItem, DialogButton, Focusable, Navigation, PanelSection, PanelSectionRow, SliderField, Tabs, TextField, ToggleField } from '@decky/ui';
 import { useEffect, useMemo, useState } from 'react';
 import { FaArrowLeft, FaVolumeMute, FaVolumeUp } from 'react-icons/fa';
 
 import { Dropdown, LanguageSection, LookEditor, SoundSlotControls, useBuiltinSounds } from './components';
 import { t, tr, useLanguage } from './i18n';
-import { Preset, allPresets, buildOpts, presetPatchTier, tierLook } from './presets';
+import { Preset, allPresets, buildOpts, presetPatchTier, presetsForTier, tierLook } from './presets';
 import { runtime } from './runtime';
-import { AchSettings, getSettings, saveSettings, setGamePreset } from './settings';
+import { AchSettings, deleteCustomPreset, getSettings, saveMasterPreset, saveSettings, saveTierPreset, setGamePreset } from './settings';
 import { LAYOUTS, POSITIONS, getTheme, resolveAccent } from './themes';
 import { ToastData, renderPreviewHtml } from './toastWindow';
 
@@ -49,8 +49,17 @@ function previewData(rare: boolean): ToastData {
 }
 
 function presetSwatch(p: Preset): string {
-  const [a, b] = resolveAccent(getTheme(p.rare.theme), p.rare.accent);
+  const look = p.rare || p.common;
+  if (!look) return 'linear-gradient(135deg,#555,#333)';
+  const [a, b] = resolveAccent(getTheme(look.theme), look.accent);
   return `linear-gradient(135deg,${a},${b})`;
+}
+
+/** Short tag for a saved preset's scope. */
+function presetScopeTag(p: Preset): string {
+  if (p.scope === 'both') return t('presets.tagMaster');
+  if (p.scope === 'rare') return t('presets.tagRare');
+  return t('presets.tagCommon');
 }
 
 export function TrophyStudio() {
@@ -62,6 +71,7 @@ export function TrophyStudio() {
   const [previewSound, setPreviewSound] = useState(true);
   const [frameH, setFrameH] = useState(132);
   const [game, setGame] = useState<{ appid: number; name: string } | null>(null);
+  const [presetName, setPresetName] = useState('');
   const builtins = useBuiltinSounds();
 
   // Poll the currently-running game (for the per-game section).
@@ -83,12 +93,26 @@ export function TrophyStudio() {
   const look = tierLook(s, rareTier);
   const previewKey = JSON.stringify([look, s.width, s.position, s.layout, rareTier, nonce]);
   const html = useMemo(
-    () => renderPreviewHtml(previewData(rareTier), buildOpts(s, rareTier, look)),
+    // The nonce marker makes the srcDoc change on Replay/tier/preset changes so the
+    // iframe reloads and the entrance animation plays again; it stays out of the key
+    // deps otherwise, so sound/volume/duration changes never reload (no flicker).
+    () => renderPreviewHtml(previewData(rareTier), buildOpts(s, rareTier, look)) + `<!--p${nonce}-->`,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [previewKey],
   );
 
   const applyPreset = (p: Preset) => { setS(saveSettings(presetPatchTier(p, rareTier))); bump(); };
+  // Apply a saved preset to whichever tier(s) it carries (master = both).
+  const applySaved = (p: Preset) => {
+    setS(saveSettings({ ...presetPatchTier(p, false), ...presetPatchTier(p, true) }));
+    bump();
+  };
+  const doSave = (scope: 'common' | 'rare' | 'both') => {
+    const nm = presetName.trim();
+    if (scope === 'both') setS(saveMasterPreset(nm, tierLook(s, false), tierLook(s, true)));
+    else setS(saveTierPreset(nm, scope, tierLook(s, scope === 'rare')));
+    setPresetName('');
+  };
   const testOnScreen = () => { try { w.__kitsuneAchievementToasts?.simulate?.(rareTier); } catch { /* ignore */ } };
   // Replay the in-panel preview; optionally play the tier's sound alongside it.
   const replay = () => { bump(); if (previewSound) { try { void runtime.sound?.play(rareTier); } catch { /* ignore */ } } };
@@ -111,10 +135,13 @@ export function TrophyStudio() {
 
   const presets = allPresets();
   const overrides = Object.entries(s.gamePresets || {});
-  const presetOptions = [
+  const saved = [...s.customPresets].reverse();
+  const presetLabel = (p: Preset) => (p.scope && p.scope !== 'both' ? `${p.name} [${presetScopeTag(p)}]` : p.name);
+  const tierOptions = (rare: boolean) => [
     { data: '', label: t('studio.useDefault') },
-    ...presets.map((p) => ({ data: p.id, label: p.name })),
+    ...presetsForTier(rare).map((p) => ({ data: p.id, label: presetLabel(p) })),
   ];
+  const presetNameById = (id?: string) => (id ? (presets.find((x) => x.id === id)?.name ?? id) : '—');
   const previewW = Math.min(s.width, PREVIEW_W);
   const tierName = rareTier ? t('studio.tierRare') : t('studio.tierCommon');
   const pad = { maxWidth: 900, margin: '0 auto', padding: '4px 2.6vw 40px' } as const;
@@ -207,12 +234,20 @@ export function TrophyStudio() {
           <div style={{ fontSize: 12, opacity: 0.6, paddingBottom: 6 }}>{t('studio.perGameDesc')}</div>
         </PanelSectionRow>
         {game ? (
-          <Dropdown
-            label={`${t('studio.openGame')}: ${game.name}`}
-            value={s.gamePresets?.[String(game.appid)] ?? ''}
-            options={presetOptions}
-            onChange={(v) => setS(setGamePreset(game.appid, v))}
-          />
+          <>
+            <Dropdown
+              label={`${t('studio.tierCommon')} — ${game.name}`}
+              value={s.gamePresets?.[String(game.appid)]?.common ?? ''}
+              options={tierOptions(false)}
+              onChange={(v) => setS(setGamePreset(game.appid, 'common', v))}
+            />
+            <Dropdown
+              label={`${t('studio.tierRare')} — ${game.name}`}
+              value={s.gamePresets?.[String(game.appid)]?.rare ?? ''}
+              options={tierOptions(true)}
+              onChange={(v) => setS(setGamePreset(game.appid, 'rare', v))}
+            />
+          </>
         ) : (
           <PanelSectionRow>
             <div style={{ fontSize: 13, opacity: 0.55, padding: '4px 0' }}>{t('studio.noGame')}</div>
@@ -224,25 +259,24 @@ export function TrophyStudio() {
             <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75, padding: '10px 0 4px' }}>{t('studio.overrides')}</div>
           </PanelSectionRow>
         )}
-        {overrides.map(([appid, presetId]) => {
-          const p = presets.find((x) => x.id === presetId);
-          return (
-            <PanelSectionRow key={appid}>
-              <Focusable style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 10 }}>
-                <div style={{ minWidth: 0, overflow: 'hidden' }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{appName(appid)}</div>
-                  <div style={{ fontSize: 12, opacity: 0.6 }}>{p ? p.name : presetId}</div>
+        {overrides.map(([appid, g]) => (
+          <PanelSectionRow key={appid}>
+            <Focusable style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 10 }}>
+              <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                <div style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{appName(appid)}</div>
+                <div style={{ fontSize: 12, opacity: 0.6 }}>
+                  {t('studio.tierCommon')}: {presetNameById(g.common)} · {t('studio.tierRare')}: {presetNameById(g.rare)}
                 </div>
-                <DialogButton
-                  style={{ width: 110, minWidth: 110, height: 34 }}
-                  onClick={() => setS(setGamePreset(appid, ''))}
-                >
-                  {t('studio.remove')}
-                </DialogButton>
-              </Focusable>
-            </PanelSectionRow>
-          );
-        })}
+              </div>
+              <DialogButton
+                style={{ width: 110, minWidth: 110, height: 34 }}
+                onClick={() => { setGamePreset(appid, 'common', ''); setS(setGamePreset(appid, 'rare', '')); }}
+              >
+                {t('studio.remove')}
+              </DialogButton>
+            </Focusable>
+          </PanelSectionRow>
+        ))}
       </PanelSection>
 
       <PanelSection title={t('advanced.title')}>
@@ -255,6 +289,48 @@ export function TrophyStudio() {
       <LanguageSection />
       <div style={{ height: 20 }} />
       <ButtonItem layout="below" onClick={() => Navigation.NavigateBack()}>{t('studio.back')}</ButtonItem>
+    </div>
+  );
+
+  // ---- Presets tab: save the current look as a named preset + manage saved ones ----
+  const presetsTab = (
+    <div style={pad}>
+      <PanelSection title={t('presets.saveTitle')}>
+        <PanelSectionRow>
+          <div style={{ fontSize: 12, opacity: 0.6, paddingBottom: 6 }}>{t('presets.saveDesc')}</div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <TextField label={t('presets.name')} value={presetName}
+            onChange={(e: any) => setPresetName(e?.target?.value ?? '')} />
+        </PanelSectionRow>
+        <Focusable style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 0' }}>
+          <DialogButton style={{ flex: '1 1 30%', minWidth: 120, height: 40 }} disabled={!presetName.trim()} onClick={() => doSave('common')}>{t('presets.saveCommon')}</DialogButton>
+          <DialogButton style={{ flex: '1 1 30%', minWidth: 120, height: 40 }} disabled={!presetName.trim()} onClick={() => doSave('rare')}>{t('presets.saveRare')}</DialogButton>
+          <DialogButton style={{ flex: '1 1 30%', minWidth: 120, height: 40 }} disabled={!presetName.trim()} onClick={() => doSave('both')}>{t('presets.saveMaster')}</DialogButton>
+        </Focusable>
+      </PanelSection>
+
+      <PanelSection title={t('presets.savedTitle')}>
+        {saved.length === 0 ? (
+          <PanelSectionRow><div style={{ fontSize: 13, opacity: 0.55, padding: '4px 0' }}>{t('presets.none')}</div></PanelSectionRow>
+        ) : saved.map((p) => (
+          <PanelSectionRow key={p.id}>
+            <Focusable style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', gap: 10 }}>
+              <div style={{ minWidth: 0, overflow: 'hidden', display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ width: 14, height: 14, borderRadius: 4, flex: '0 0 auto', background: presetSwatch(p) }} />
+                <div style={{ minWidth: 0, overflow: 'hidden' }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                  <div style={{ fontSize: 11, opacity: 0.6 }}>{presetScopeTag(p)}</div>
+                </div>
+              </div>
+              <Focusable style={{ display: 'flex', gap: 6, flex: '0 0 auto' }}>
+                <DialogButton style={{ width: 96, minWidth: 96, height: 34 }} onClick={() => applySaved(p)}>{t('presets.apply')}</DialogButton>
+                <DialogButton style={{ width: 96, minWidth: 96, height: 34 }} onClick={() => setS(deleteCustomPreset(p.id))}>{t('presets.delete')}</DialogButton>
+              </Focusable>
+            </Focusable>
+          </PanelSectionRow>
+        ))}
+      </PanelSection>
     </div>
   );
 
@@ -318,6 +394,7 @@ export function TrophyStudio() {
           onShowTab={(id: string) => setTab(id)}
           tabs={[
             { id: 'look', title: t('studio.tabLook'), content: lookTab },
+            { id: 'presets', title: t('studio.tabPresets'), content: presetsTab },
             { id: 'general', title: t('studio.tabGeneral'), content: generalTab },
           ]}
         />

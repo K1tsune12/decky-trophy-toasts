@@ -4,6 +4,7 @@
 // backend round-trip for something this small.
 
 import { defaultFx, sanitizeFx } from './themes';
+import type { LookTier, Preset } from './presets';
 
 /** A configurable sound slot (normal or rare). Empty path = use the bundled default. */
 export interface SoundSlot {
@@ -13,6 +14,12 @@ export interface SoundSlot {
   path: string;
   /** Playback volume, 0..1. */
   volume: number;
+}
+
+/** Per-game override: a preset id per tier ('' / undefined = global default). */
+export interface GamePreset {
+  common?: string;
+  rare?: string;
 }
 
 export interface AchSettings {
@@ -66,8 +73,10 @@ export interface AchSettings {
   soundRare: SoundSlot;
   /** Master volume, 0..100, scales both slots. */
   masterVolume: number;
-  /** Per-game look override: appid -> preset id (see presets.ts). */
-  gamePresets: Record<string, string>;
+  /** Per-game look override: appid -> { common?, rare? } preset ids (see presets.ts). */
+  gamePresets: Record<string, GamePreset>;
+  /** User-saved presets (per-tier or master). Built-in presets live in presets.ts. */
+  customPresets: Preset[];
   /** Log each achievement event to the console (calibration aid). */
   debug: boolean;
 }
@@ -104,6 +113,7 @@ export const DEFAULT_SETTINGS: AchSettings = {
   soundRare: slot('builtin:marimba'),
   masterVolume: 100,
   gamePresets: {},
+  customPresets: [],
   debug: false,
 };
 
@@ -124,8 +134,24 @@ function hydrate(raw: Partial<AchSettings> & { durationMs?: number }): AchSettin
     fxRare: sanitizeFx(Array.isArray(raw.fxRare) ? raw.fxRare : DEFAULT_SETTINGS.fxRare),
     soundCommon: { ...DEFAULT_SETTINGS.soundCommon, ...(raw.soundCommon ?? {}) },
     soundRare: { ...DEFAULT_SETTINGS.soundRare, ...(raw.soundRare ?? {}) },
-    gamePresets: raw.gamePresets && typeof raw.gamePresets === 'object' ? raw.gamePresets : {},
+    gamePresets: migrateGamePresets(raw.gamePresets),
+    customPresets: Array.isArray(raw.customPresets) ? raw.customPresets : [],
   };
+}
+
+/** Old gamePresets stored `appid -> presetId` (applied both tiers); migrate to
+ *  `appid -> { common, rare }`. New-format entries pass through unchanged. */
+function migrateGamePresets(raw: unknown): Record<string, GamePreset> {
+  const out: Record<string, GamePreset> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [appid, v] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof v === 'string') out[appid] = { common: v, rare: v };
+    else if (v && typeof v === 'object') {
+      const g = v as GamePreset;
+      out[appid] = { common: g.common || undefined, rare: g.rare || undefined };
+    }
+  }
+  return out;
 }
 
 export function getSettings(): AchSettings {
@@ -155,13 +181,49 @@ export function saveSlot(which: 'soundCommon' | 'soundRare', patch: Partial<Soun
   return next;
 }
 
-/** Assign (or clear, with '') a per-game preset and persist. */
-export function setGamePreset(appid: number | string, presetId: string): AchSettings {
+/** Assign (or clear, with '') a per-game preset for ONE tier and persist. */
+export function setGamePreset(appid: number | string, tier: 'common' | 'rare', presetId: string): AchSettings {
   const cur = getSettings();
   const next = { ...cur.gamePresets };
-  if (presetId) next[String(appid)] = presetId;
-  else delete next[String(appid)];
+  const key = String(appid);
+  const entry: GamePreset = { ...(next[key] || {}) };
+  if (presetId) entry[tier] = presetId;
+  else delete entry[tier];
+  if (entry.common || entry.rare) next[key] = entry;
+  else delete next[key];
   return saveSettings({ gamePresets: next });
+}
+
+let presetSeq = 0;
+function newPresetId(prefix: string): string {
+  presetSeq += 1;
+  return `${prefix}:${Date.now().toString(36)}${presetSeq}`;
+}
+
+/** Save the current look of ONE tier as a named preset. */
+export function saveTierPreset(name: string, tier: 'common' | 'rare', look: LookTier): AchSettings {
+  const cur = getSettings();
+  const preset = { id: newPresetId(tier === 'rare' ? 'r' : 'c'), name: name.trim() || 'Preset', scope: tier, [tier]: look } as Preset;
+  return saveSettings({ customPresets: [...cur.customPresets, preset] });
+}
+
+/** Save both tiers' current look as a named "master" preset. */
+export function saveMasterPreset(name: string, common: LookTier, rare: LookTier): AchSettings {
+  const cur = getSettings();
+  const preset: Preset = { id: newPresetId('m'), name: name.trim() || 'Preset', scope: 'both', common, rare };
+  return saveSettings({ customPresets: [...cur.customPresets, preset] });
+}
+
+/** Delete a saved preset and drop any per-game references to it. */
+export function deleteCustomPreset(id: string): AchSettings {
+  const cur = getSettings();
+  const customPresets = cur.customPresets.filter((p) => p.id !== id);
+  const gamePresets: Record<string, GamePreset> = {};
+  for (const [appid, g] of Object.entries(cur.gamePresets)) {
+    const entry: GamePreset = { common: g.common === id ? undefined : g.common, rare: g.rare === id ? undefined : g.rare };
+    if (entry.common || entry.rare) gamePresets[appid] = entry;
+  }
+  return saveSettings({ customPresets, gamePresets });
 }
 
 /** Final playback volume (0..1) for a slot volume, after the master volume. */
