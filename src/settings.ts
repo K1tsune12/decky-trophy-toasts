@@ -73,6 +73,13 @@ export interface AchSettings {
   soundRare: SoundSlot;
   /** Master volume, 0..100, scales both slots. */
   masterVolume: number;
+  /** Card background opacity, 0..100 (lower = more of the game shows through). */
+  bgOpacity: number;
+  /** Whole-card opacity, 0..100 (fades background, text and effects together). */
+  cardOpacity: number;
+  /** Frosted-glass blur on the card background (preview + Steam UI; a game can't be
+   *  blurred from the overlay layer, so over a game it's transparency only). */
+  glass: boolean;
   /** Per-game look override: appid -> { common?, rare? } preset ids (see presets.ts). */
   gamePresets: Record<string, GamePreset>;
   /** User-saved presets (per-tier or master). Built-in presets live in presets.ts. */
@@ -112,6 +119,9 @@ export const DEFAULT_SETTINGS: AchSettings = {
   soundCommon: slot('builtin:chime'),
   soundRare: slot('builtin:marimba'),
   masterVolume: 100,
+  bgOpacity: 90,
+  cardOpacity: 100,
+  glass: true,
   gamePresets: {},
   customPresets: [],
   debug: false,

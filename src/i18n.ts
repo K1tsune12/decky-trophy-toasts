@@ -24,6 +24,13 @@ const en = {
   'behavior.width': 'Width',
 
   'appearance.title': 'Appearance',
+  'transp.title': 'Transparency & glass',
+  'transp.bg': 'Background opacity',
+  'transp.bgDesc': 'Lower = more of the game shows through the card',
+  'transp.card': 'Whole-card opacity',
+  'transp.cardDesc': 'Fades background, text and effects together',
+  'transp.glass': 'Frosted glass (blur)',
+  'transp.glassDesc': 'Blurs the backdrop in the preview + Steam UI. A running game cannot be blurred, so over a game it is transparency only.',
   'appearance.position': 'Position',
   'appearance.layout': 'Layout',
 
@@ -166,6 +173,13 @@ const ptBR: Record<Key, string> = {
   'behavior.width': 'Largura',
 
   'appearance.title': 'Aparência',
+  'transp.title': 'Transparência & vidro',
+  'transp.bg': 'Opacidade do fundo',
+  'transp.bgDesc': 'Menor = o jogo aparece mais através do card',
+  'transp.card': 'Opacidade do card inteiro',
+  'transp.cardDesc': 'Esmaece fundo, texto e efeitos juntos',
+  'transp.glass': 'Vidro fosco (blur)',
+  'transp.glassDesc': 'Borra o fundo na prévia + UI do Steam. Um jogo rodando não pode ser borrado, então sobre o jogo é só transparência.',
   'appearance.position': 'Posição',
   'appearance.layout': 'Layout',
 

@@ -175,6 +175,9 @@ export function buildOpts(s: AchSettings, rare: boolean, look: LookTier): ToastO
     font: look.font,
     fxColor: look.fxColor,
     fx: look.fx,
+    bgOpacity: s.bgOpacity,
+    cardOpacity: s.cardOpacity,
+    glass: s.glass,
     eyebrow: rare ? tr('toast.rareUnlocked') : tr('toast.unlocked'),
     badge: tr('toast.rareBadge'),
   };

@@ -80,6 +80,7 @@ function encodeFlags(
     ar, ag, ab,                                              // 24,25,26: accent A rgb
     fr, fg, fb,                                              // 27,28,29: fx color rgb
     br, bgc, bb,                                             // 30,31,32: accent B rgb
+    Math.round(typeof opts.cardOpacity === 'number' ? opts.cardOpacity : 100), // 33: card opacity
   ];
   nums.forEach((val, j) => {
     ctx.fillStyle = `rgb(${clamp(val)},0,0)`;

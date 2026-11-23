@@ -206,6 +206,23 @@ export function TrophyStudio() {
         </PanelSectionRow>
       </PanelSection>
 
+      <PanelSection title={t('transp.title')}>
+        <PanelSectionRow>
+          <SliderField label={t('transp.bg')} description={t('transp.bgDesc')} disabled={!s.enabled}
+            value={s.bgOpacity} min={0} max={100} step={5} showValue
+            onChange={(v) => { update({ bgOpacity: v }); bump(); }} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <SliderField label={t('transp.card')} description={t('transp.cardDesc')} disabled={!s.enabled}
+            value={s.cardOpacity} min={20} max={100} step={5} showValue
+            onChange={(v) => { update({ cardOpacity: v }); bump(); }} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label={t('transp.glass')} description={t('transp.glassDesc')}
+            disabled={!s.enabled} checked={s.glass} onChange={(v) => { update({ glass: v }); bump(); }} />
+        </PanelSectionRow>
+      </PanelSection>
+
       <PanelSection title={t('behavior.title')}>
         <PanelSectionRow>
           <ToggleField label={t('behavior.replaceNative')} description={t('behavior.replaceNativeDesc')}

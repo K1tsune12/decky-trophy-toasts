@@ -79,8 +79,10 @@ def read_flags(pixbuf, h):
         acc = (num(rblock + 5), num(rblock + 6), num(rblock + 7))  # 24,25,26: accent A
         fxc = (num(rblock + 8), num(rblock + 9), num(rblock + 10))  # 27,28,29: fx color
         accb = (num(rblock + 11), num(rblock + 12), num(rblock + 13))  # 30,31,32: accent B
+        copac = num(rblock + 14)                       # 33: whole-card opacity (0..100)
         return {"magic": True, "fx": fx, "ambient": ambient, "radius": radius,
-                "icon": icon, "anim": anim, "accent": acc, "fxcolor": fxc, "accentb": accb}
+                "icon": icon, "anim": anim, "accent": acc, "fxcolor": fxc,
+                "accentb": accb, "cardopacity": copac}
     except Exception:  # noqa: BLE001  pylint: disable=broad-except
         return {}
 
@@ -280,6 +282,8 @@ def main():
     _ab = flags.get("accentb", (0, 0, 0))
     accent_b = ((_ab[0] / 255.0, _ab[1] / 255.0, _ab[2] / 255.0)
                 if (_ab[0] or _ab[1] or _ab[2]) else accent)
+    # Whole-card opacity (fades card + effects together); default fully opaque.
+    card_opacity = max(0.0, min(1.0, flags.get("cardopacity", 100) / 100.0))
     # The card is rendered at RENDER_SCALE=2 (css->sheet), then shown at card_w.
     rscale = (2.0 * card_w / sheet_w) if sheet_w else 1.0
     disp_radius = flags.get("radius", 0) * rscale
@@ -782,6 +786,9 @@ def main():
             cr.translate(lcx, lcy)
             cr.scale(sx, sy)
             cr.translate(-lcx, -lcy)
+        grouped = card_opacity < 0.999                   # fade card + effects together
+        if grouped:
+            cr.push_group()
         cr.set_source_surface(card0, 0, 0)
         cr.paint_with_alpha(alpha)
         # glow-in entrance also brightens the card (CSS brightness 1.8 -> 1).
@@ -830,6 +837,9 @@ def main():
                 fx_bar(el, cr, "hue")
             if ambient == "breathe":
                 fx_bar(el, cr, "breathe")
+        if grouped:
+            cr.pop_group_to_source()
+            cr.paint_with_alpha(card_opacity)
         cr.restore()
         return False
 

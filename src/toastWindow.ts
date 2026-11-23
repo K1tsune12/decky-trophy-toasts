@@ -41,6 +41,12 @@ export interface ToastStyle {
   border?: boolean;
   /** Effect ids to render; undefined = sensible defaults by rarity. */
   fx?: string[];
+  /** Card background opacity 0..100 (undefined = theme default). */
+  bgOpacity?: number;
+  /** Whole-card opacity 0..100 (undefined = 100). */
+  cardOpacity?: number;
+  /** Frosted-glass blur on the card background (undefined = theme default). */
+  glass?: boolean;
   /** Localized eyebrow + badge text. */
   eyebrow: string;
   badge: string;
@@ -124,6 +130,12 @@ function hexToRgba(hex: string, a: number): string {
   return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${a})`;
 }
 
+/** Set every rgba(...) stop in a background/gradient to the given alpha (0..1). */
+function reAlphaBg(cardBg: string, alpha: number): string {
+  const a = Math.max(0, Math.min(1, alpha)).toFixed(3);
+  return cardBg.replace(/rgba\(([^,]+),([^,]+),([^,]+),[^)]+\)/g, (_m, r, g, b) => `rgba(${r},${g},${b},${a})`);
+}
+
 function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStatic = false): { fontImp: string; style: string; body: string } {
   const rare = opts.rare;
   const theme = getTheme(opts.themeId);
@@ -135,6 +147,17 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
   const fxCol = resolveFxColor(opts.fxColor || ''); // '' = per-effect defaults
   const glow = theme.glow ? `0 0 16px ${theme.glow}` : 'none';
   const allKeyframes = ANIMATIONS.map((a) => `@keyframes kf_${a.id}{${a.keyframes}}`).join('');
+
+  // User transparency / glass controls. bgOpacity re-alphas the card background
+  // (baked, so it works over the game too); cardOpacity fades the whole card (here
+  // for the preview; the over-game path applies it in the helper); glass is the
+  // frosted blur (preview / Steam UI only — a running game can't be blurred).
+  const cardBg = typeof opts.bgOpacity === 'number' ? reAlphaBg(theme.cardBg, opts.bgOpacity / 100) : theme.cardBg;
+  const cardA = typeof opts.cardOpacity === 'number' ? Math.max(0, Math.min(1, opts.cardOpacity / 100)) : 1;
+  const glassOn = opts.glass !== false;
+  const glassBlur = (!opaque && glassOn && theme.blur)
+    ? `-webkit-backdrop-filter:blur(${theme.blur}px) saturate(1.2);backdrop-filter:blur(${theme.blur}px) saturate(1.2);`
+    : '';
 
   const eyebrowStyle = theme.eyebrow === 'accent'
     ? `background:linear-gradient(90deg,${accA},${accB});-webkit-background-clip:text;background-clip:text;color:transparent;`
@@ -295,8 +318,9 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
   .cardwrap{position:relative;width:100%;}
   .card{position:relative;display:flex;flex-direction:${lay.dir};align-items:center;gap:${lay.gap}px;
     padding:${lay.pad};width:100%;box-sizing:border-box;overflow:hidden;border-radius:${theme.radius}px;
-    background:${opaque ? `${theme.cardBg},rgba(7,8,11,0.82)` : theme.cardBg};
-    ${!opaque && theme.blur ? `-webkit-backdrop-filter:blur(${theme.blur}px) saturate(1.2);backdrop-filter:blur(${theme.blur}px) saturate(1.2);` : ''}
+    background:${cardBg};
+    ${glassBlur}
+    ${!opaque && cardA < 1 ? `opacity:${cardA};` : ''}
     box-shadow:inset 0 0 0 1px ${theme.border}${glow !== 'none' ? ',' + glow : ''};
     animation:${cardAnim};}
   ${accentCss}
