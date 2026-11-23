@@ -34,7 +34,8 @@ import gi
 gi.require_version("Gtk", "3.0")
 gi.require_version("Gdk", "3.0")
 gi.require_version("GdkPixbuf", "2.0")
-from gi.repository import Gdk, Gtk, GdkPixbuf, GLib  # noqa: E402
+gi.require_version("GdkX11", "3.0")
+from gi.repository import Gdk, Gtk, GdkPixbuf, GdkX11, GLib  # noqa: E402
 
 _LOG = "/tmp/ktt_helper.log"
 # Effect-config flags encoded in the PNG's extra bottom rows (see overlay.ts).
@@ -123,6 +124,11 @@ def parse_args():
     p.add_argument("--anim", default="slide", choices=["slide", "fade", "none"])
     p.add_argument("--auto-scale", type=int, default=0,
                    help="1 = scale the card by the real screen size (w/h/margin are for 1280x800)")
+    p.add_argument("--mirror", type=int, default=1,
+                   help="1 = keep the displaced external overlay (FPS counter) visible under the toast")
+    p.add_argument("--mirror-test", default="",
+                   help="test harness: xid (hex) of a window to mirror; writes its used region to "
+                        "--dump-dir as mirror.png and exits without showing anything")
     p.add_argument("--dump-dir", default="", help="test harness: write frames here and exit")
     p.add_argument("--dump-times", default="", help="comma-separated ms for --dump-dir")
     return p.parse_args()
@@ -247,6 +253,213 @@ def set_overlay_atom(xid):
         )
     except Exception:  # noqa: BLE001  pylint: disable=broad-except
         pass
+
+
+class OverlayMirror:
+    """Keeps the other external overlay visible while the toast is up.
+
+    gamescope composites only ONE window carrying GAMESCOPE_EXTERNAL_OVERLAY at a time
+    (the most opaque one; the topmost on a tie). While the toast is on screen that is
+    our window, so the overlay it displaced — the Steam performance / FPS overlay
+    (mangoapp), or another plugin's overlay — would vanish for the whole toast. This
+    reads that window's pixels and paints them beneath the card, so nothing disappears.
+    Only the region the other overlay actually draws in is refreshed."""
+
+    PAD = 6
+
+    def __init__(self, own_xid, force_xid=0):
+        self.gwin = None
+        self.geom = (0, 0, 0, 0)        # x, y, w, h of the mirrored window
+        self.alpha = 1.0
+        self.bbox = None                # used region inside it (x, y, w, h)
+        self.surface = None             # that region's pixels (cairo surface)
+        self.xid = 0
+        try:
+            found = self._find(own_xid, force_xid)
+            if found:
+                self.xid, self.geom, self.alpha = found
+                self.gwin = GdkX11.X11Window.foreign_new_for_display(Gdk.Display.get_default(), self.xid)
+        except Exception as err:  # noqa: BLE001  pylint: disable=broad-except
+            log("mirror: discovery failed: " + str(err))
+            self.gwin = None
+
+    @staticmethod
+    def _find(own_xid, force_xid):
+        """The window gamescope would composite if ours were not there:
+        (xid, (x, y, w, h), opacity 0..1) or None."""
+        import ctypes  # pylint: disable=import-outside-toplevel
+
+        class Attrs(ctypes.Structure):  # XWindowAttributes
+            _fields_ = [("x", ctypes.c_int), ("y", ctypes.c_int), ("width", ctypes.c_int),
+                        ("height", ctypes.c_int), ("border_width", ctypes.c_int),
+                        ("depth", ctypes.c_int), ("visual", ctypes.c_void_p),
+                        ("root", ctypes.c_ulong), ("cls", ctypes.c_int),
+                        ("bit_gravity", ctypes.c_int), ("win_gravity", ctypes.c_int),
+                        ("backing_store", ctypes.c_int), ("backing_planes", ctypes.c_ulong),
+                        ("backing_pixel", ctypes.c_ulong), ("save_under", ctypes.c_int),
+                        ("colormap", ctypes.c_ulong), ("map_installed", ctypes.c_int),
+                        ("map_state", ctypes.c_int), ("all_event_masks", ctypes.c_long),
+                        ("your_event_mask", ctypes.c_long),
+                        ("do_not_propagate_mask", ctypes.c_long),
+                        ("override_redirect", ctypes.c_int), ("screen", ctypes.c_void_p)]
+
+        x11 = ctypes.CDLL("libX11.so.6")
+        vp, ul = ctypes.c_void_p, ctypes.c_ulong
+        x11.XOpenDisplay.restype = vp
+        x11.XOpenDisplay.argtypes = [ctypes.c_char_p]
+        x11.XDefaultRootWindow.restype = ul
+        x11.XDefaultRootWindow.argtypes = [vp]
+        x11.XInternAtom.restype = ul
+        x11.XInternAtom.argtypes = [vp, ctypes.c_char_p, ctypes.c_int]
+        x11.XQueryTree.argtypes = [vp, ul, ctypes.POINTER(ul), ctypes.POINTER(ul),
+                                   ctypes.POINTER(ctypes.POINTER(ul)), ctypes.POINTER(ctypes.c_uint)]
+        x11.XGetWindowProperty.argtypes = [
+            vp, ul, ul, ctypes.c_long, ctypes.c_long, ctypes.c_int, ul,
+            ctypes.POINTER(ul), ctypes.POINTER(ctypes.c_int), ctypes.POINTER(ul),
+            ctypes.POINTER(ul), ctypes.POINTER(ctypes.POINTER(ul))]
+        x11.XGetWindowAttributes.argtypes = [vp, ul, ctypes.POINTER(Attrs)]
+        x11.XFree.argtypes = [vp]
+        x11.XSync.argtypes = [vp, ctypes.c_int]
+        x11.XCloseDisplay.argtypes = [vp]
+        x11.XSetErrorHandler.restype = vp
+        x11.XSetErrorHandler.argtypes = [vp]
+
+        dpy = x11.XOpenDisplay(None)
+        if not dpy:
+            return None
+        # A window can go away mid-query; Xlib's default handler would kill us for that.
+        handler = ctypes.CFUNCTYPE(ctypes.c_int, vp, vp)(lambda _d, _e: 0)
+        previous = x11.XSetErrorHandler(ctypes.cast(handler, vp))
+        best = None
+        try:
+            overlay_atom = x11.XInternAtom(dpy, b"GAMESCOPE_EXTERNAL_OVERLAY", 1)
+            opacity_atom = x11.XInternAtom(dpy, b"_NET_WM_WINDOW_OPACITY", 1)
+
+            def cardinal(window, atom, default):
+                if not atom:
+                    return default
+                kind, fmt, count, after = ul(), ctypes.c_int(), ul(), ul()
+                data = ctypes.POINTER(ul)()
+                status = x11.XGetWindowProperty(dpy, window, atom, 0, 1, 0, 0,
+                                                ctypes.byref(kind), ctypes.byref(fmt),
+                                                ctypes.byref(count), ctypes.byref(after),
+                                                ctypes.byref(data))
+                value = default
+                if status == 0 and data:
+                    if count.value >= 1 and fmt.value == 32:
+                        value = int(data[0]) & 0xFFFFFFFF
+                    x11.XFree(data)
+                return value
+
+            root, parent, count = ul(), ul(), ctypes.c_uint()
+            children = ctypes.POINTER(ul)()
+            if overlay_atom and x11.XQueryTree(dpy, x11.XDefaultRootWindow(dpy), ctypes.byref(root),
+                                               ctypes.byref(parent), ctypes.byref(children),
+                                               ctypes.byref(count)):
+                windows = [int(children[i]) for i in range(count.value)]   # bottom -> top
+                if children:
+                    x11.XFree(children)
+                for window in windows:
+                    if window == own_xid or (force_xid and window != force_xid):
+                        continue
+                    if not force_xid and not cardinal(window, overlay_atom, 0):
+                        continue
+                    attrs = Attrs()
+                    if not x11.XGetWindowAttributes(dpy, window, ctypes.byref(attrs)):
+                        continue
+                    if attrs.map_state != 2 or attrs.width < 2 or attrs.height < 2:   # IsViewable
+                        continue
+                    opacity = cardinal(window, opacity_atom, 0xFFFFFFFF)
+                    if opacity <= 0:
+                        continue
+                    # most opaque wins, the topmost on a tie (later in the list = higher)
+                    if best is None or opacity >= best[2]:
+                        best = (window, (attrs.x, attrs.y, attrs.width, attrs.height), opacity)
+            x11.XSync(dpy, 0)
+        finally:
+            x11.XSetErrorHandler(previous)
+            x11.XCloseDisplay(dpy)
+        if not best:
+            return None
+        return best[0], best[1], best[2] / float(0xFFFFFFFF)
+
+    def _grab(self, x, y, w, h):
+        Gdk.error_trap_push()
+        try:
+            pixbuf = Gdk.pixbuf_get_from_window(self.gwin, x, y, w, h)
+        except Exception:  # noqa: BLE001  pylint: disable=broad-except
+            pixbuf = None
+        finally:
+            Gdk.error_trap_pop_ignored()
+        return pixbuf
+
+    @staticmethod
+    def _used_box(pixbuf):
+        """Bounding box of the non-transparent pixels, or None."""
+        if pixbuf is None or not pixbuf.get_has_alpha():
+            return None
+        width, height = pixbuf.get_width(), pixbuf.get_height()
+        stride, pixels = pixbuf.get_rowstride(), pixbuf.get_pixels()
+        if stride == width * 4 and not pixels[3::4].strip(b"\0"):   # fully transparent
+            return None
+        top = bottom = None
+        left, right = width, -1
+        for row in range(height):
+            start = row * stride
+            alpha = pixels[start + 3:start + width * 4:4]
+            lead = len(alpha) - len(alpha.lstrip(b"\0"))
+            if lead == len(alpha):
+                continue
+            if top is None:
+                top = row
+            bottom = row
+            left = min(left, lead)
+            right = max(right, len(alpha.rstrip(b"\0")) - 1)
+        if top is None:
+            return None
+        return left, top, right - left + 1, bottom - top + 1
+
+    def refresh(self, full):
+        """Re-read the mirrored overlay. `full` re-finds the region it draws in;
+        otherwise only that region is read. Returns the window-space rectangle to
+        repaint (x, y, w, h), or None when nothing changed on screen."""
+        if self.gwin is None:
+            return None
+        _, _, width, height = self.geom
+        old = self.bbox
+        if not full and self.bbox is None:            # nothing drawn there: wait for the next full pass
+            return None
+        if full:
+            whole = self._grab(0, 0, width, height)
+            box = self._used_box(whole)
+            if box is None:
+                self.bbox, self.surface = None, None
+            else:
+                bx, by = max(0, box[0] - self.PAD), max(0, box[1] - self.PAD)
+                bw = min(width - bx, box[2] + box[0] - bx + self.PAD)
+                bh = min(height - by, box[3] + box[1] - by + self.PAD)
+                self.bbox = (bx, by, bw, bh)
+                self.surface = Gdk.cairo_surface_create_from_pixbuf(
+                    whole.new_subpixbuf(bx, by, bw, bh), 1, None)
+        else:
+            part = self._grab(*self.bbox)
+            if part is not None:
+                self.surface = Gdk.cairo_surface_create_from_pixbuf(part, 1, None)
+        boxes = [b for b in (old, self.bbox) if b]
+        if not boxes:
+            return None
+        x0 = min(b[0] for b in boxes)
+        y0 = min(b[1] for b in boxes)
+        x1 = max(b[0] + b[2] for b in boxes)
+        y1 = max(b[1] + b[3] for b in boxes)
+        return self.geom[0] + x0, self.geom[1] + y0, x1 - x0, y1 - y0
+
+    def paint(self, cr):
+        if self.surface is None or self.bbox is None:
+            return
+        cr.set_operator(cairo.OPERATOR_OVER)
+        cr.set_source_surface(self.surface, self.geom[0] + self.bbox[0], self.geom[1] + self.bbox[1])
+        cr.paint_with_alpha(self.alpha)
 
 
 def main():
@@ -1305,10 +1518,14 @@ def main():
         elif "glowline" in fxset:
             fx_glowline(el, cr)
 
+    mirror = {"m": None}
+
     def on_draw(_widget, cr):
         cr.set_operator(cairo.OPERATOR_SOURCE)        # clear to transparent
         cr.set_source_rgba(0, 0, 0, 0)
         cr.paint()
+        if mirror["m"] is not None:                   # the overlay we displaced, beneath the card
+            mirror["m"].paint(cr)
         render_at(cr, (time.monotonic() - anim["start"]) * 1000.0, pos_x, pos_y)
         return False
 
@@ -1375,6 +1592,22 @@ def main():
 
     # Test harness: render frames at the given times through the SAME render_at the
     # live window uses, write them as PNGs and exit without ever showing a window.
+    if args.mirror_test:
+        m = OverlayMirror(0, int(args.mirror_test, 16))
+        t0 = time.monotonic()
+        m.refresh(True)
+        t1 = time.monotonic()
+        m.refresh(False)
+        t2 = time.monotonic()
+        log("mirror-test xid=%s geom=%s alpha=%.2f bbox=%s full=%.1fms region=%.1fms"
+            % (hex(m.xid), m.geom, m.alpha, m.bbox, (t1 - t0) * 1000, (t2 - t1) * 1000))
+        print("mirror-test xid=%s geom=%s alpha=%.2f bbox=%s full=%.1fms region=%.1fms"
+              % (hex(m.xid), m.geom, m.alpha, m.bbox, (t1 - t0) * 1000, (t2 - t1) * 1000))
+        if m.surface is not None and args.dump_dir:
+            os.makedirs(args.dump_dir, exist_ok=True)
+            m.surface.write_to_png(os.path.join(args.dump_dir, "mirror.png"))
+        return
+
     if args.dump_dir:
         margin_px = int(GROUP_M)
         times = [float(t) for t in (args.dump_times or "300,800,1500").split(",") if t.strip()]
@@ -1417,6 +1650,34 @@ def main():
     def redraw():
         win.queue_draw_area(*dirty)
         return True
+
+    # gamescope shows a single external overlay: while ours is up, mirror the one it
+    # displaced (the FPS / performance overlay) so it does not blink out with each toast.
+    ticks = {"n": 0}
+
+    def refresh_mirror():
+        m = mirror["m"]
+        if m is None or tm["done"]:
+            return False
+        ticks["n"] += 1
+        area = m.refresh(ticks["n"] % 8 == 0)         # re-find its region about once a second
+        if area:
+            win.queue_draw_area(*area)
+        return True
+
+    if args.mirror:
+        try:
+            found = OverlayMirror(xid)
+            if found.gwin is not None:
+                mirror["m"] = found
+                area = found.refresh(True)
+                log("mirror: xid=%s geom=%s bbox=%s" % (hex(found.xid), found.geom, found.bbox))
+                if area:
+                    win.queue_draw_area(*area)
+                GLib.timeout_add(125, refresh_mirror)
+        except Exception:  # noqa: BLE001  pylint: disable=broad-except
+            log("mirror: disabled\n" + traceback.format_exc())
+            mirror["m"] = None
 
     def finish():
         if not tm["done"]:
