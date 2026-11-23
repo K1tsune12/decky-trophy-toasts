@@ -40,7 +40,8 @@ FLAG_ROWS = 4
 FLAG_BLOCK = 6
 FX_IDS = ["border", "glowline", "edgepulse", "edgerainbow",
           "sparkles", "stars", "confetti",
-          "accentbar", "comet", "stamp", "glint", "shockwave", "flash", "blooddrip"]
+          "accentbar", "comet", "stamp", "glint", "shockwave", "flash", "blooddrip",
+          "bloodrain"]
 AMB_IDS = ["flow", "hue", "pulse", "flow-pulse", "breathe"]
 # Entrance animations, same order as ANIMATIONS in themes.ts / ANIM_IDS in overlay.ts.
 ANIM_IDS = ["slide-down", "slide-up", "slide-left", "slide-right",
@@ -582,6 +583,36 @@ def main():
             cr.restore()
         cr.restore()
 
+    def fx_bloodrain(el, cr):
+        # Confetti-style burst, but blood drops raining down. Mirrors CSS .brain:
+        # teardrop-ish droplets (dark -> red) falling top -> bottom with a slight sway.
+        bc = fxcol if fxcol else (1.0, 0.16, 0.16)
+        dark = (0.30, 0.0, 0.0)
+        cr.save()
+        cr.rectangle(0, 0, card_w, card_h)
+        cr.clip()
+        n = 11
+        w_ = 5.0 * rscale
+        drop_h = 9.0 * rscale
+        for i in range(n):
+            prog = (el / 1500.0 + i * 0.41) % 1.0            # continuous fall, staggered
+            cx = (i + 0.5) / n * card_w + math.sin(el / 600.0 + i) * 3.0 * rscale
+            cy = (prog ** 1.3) * (card_h + 24.0 * rscale) - 12.0 * rscale  # accelerating
+            a = 0.9
+            if prog < 0.08:
+                a *= prog / 0.08
+            cr.save()
+            cr.translate(cx, cy)
+            grad = cairo.LinearGradient(0, -drop_h / 2.0, 0, drop_h / 2.0)
+            grad.add_color_stop_rgba(0.0, dark[0], dark[1], dark[2], a)
+            grad.add_color_stop_rgba(1.0, bc[0], bc[1], bc[2], a)
+            cr.set_source(grad)                              # locked to this translate space
+            cr.scale(w_ / 2.0, drop_h / 2.0)                 # unit circle -> drop ellipse
+            cr.arc(0, 0, 1.0, 0, 2 * math.pi)
+            cr.fill()
+            cr.restore()
+        cr.restore()
+
     # Flair ----------------------------------------------------------------------
     def fx_comet(el, cr):
         # CSS .comet: a 5x16 capsule (white->accent) with a strong soft glow
@@ -825,6 +856,8 @@ def main():
                 fx_particles(el, cr, star_pos, 2 * math.pi / 1.6, "star")
             elif "sparkles" in fxset:
                 fx_particles(el, cr, spark_pos, 2 * math.pi / 1.7, "dot")
+            elif "bloodrain" in fxset:
+                fx_bloodrain(el, cr)
             if "comet" in fxset:
                 fx_comet(el, cr)
             if "blooddrip" in fxset:
@@ -871,6 +904,8 @@ def main():
                 fx_particles(t, dc, star_pos, 2 * math.pi / 1.6, "star")
             elif "sparkles" in fxset:
                 fx_particles(t, dc, spark_pos, 2 * math.pi / 1.7, "dot")
+            elif "bloodrain" in fxset:
+                fx_bloodrain(t, dc)
             if "comet" in fxset:
                 fx_comet(t, dc)
             if "blooddrip" in fxset:

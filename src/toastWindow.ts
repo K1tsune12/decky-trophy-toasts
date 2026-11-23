@@ -251,11 +251,16 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
     .edgefx rect{fill:none;vector-effect:non-scaling-stroke;}`;
   }
   if (has('glowline') && !isStatic) {
-    // Solid continuous outline (gbase) + a bright highlight sliding over it (grun).
-    fxCss += `.glowline .gbase{stroke:${accB};stroke-width:1.8;opacity:.7;filter:drop-shadow(0 0 3px ${accB}) drop-shadow(0 0 6px ${accB});}
-    .glowline .grun{stroke:${accA};stroke-width:2.5;stroke-linecap:round;stroke-dasharray:22 78;filter:drop-shadow(0 0 4px ${accA}) drop-shadow(0 0 10px ${accB}) drop-shadow(0 0 18px ${accB});animation:gline 2.3s linear infinite;}
+    // Match the cairo over-game render: a FAINT continuous outline (gbase) + a soft,
+    // wide travelling glow (gglow, blurred) + one crisp bright core segment (grun).
+    // dasharray 22/78 over the normalized pathLength=100 -> exactly ONE segment, not
+    // a repeating dash. Smooth glow instead of stacked drop-shadow bands (which read
+    // as several parallel lines).
+    fxCss += `.glowline .gbase{stroke:${accB};stroke-width:1.1;opacity:.38;filter:drop-shadow(0 0 3px ${accB});}
+    .glowline .gglow{stroke:${accB};stroke-width:6;stroke-linecap:round;stroke-dasharray:22 78;opacity:.8;filter:blur(2.4px);animation:gline 2.3s linear infinite;}
+    .glowline .grun{stroke:${accA};stroke-width:2.2;stroke-linecap:round;stroke-dasharray:22 78;filter:drop-shadow(0 0 2px ${accA});animation:gline 2.3s linear infinite;}
     @keyframes gline{from{stroke-dashoffset:0;}to{stroke-dashoffset:-100;}}`;
-    glowlineEl += edgeSvg('edgefx glowline', edgeRect('gbase') + edgeRect('grun'));
+    glowlineEl += edgeSvg('edgefx glowline', edgeRect('gbase') + edgeRect('gglow') + edgeRect('grun'));
   }
   if (has('edgepulse') && !isStatic) {
     // Continuous outline whose glow pulses (no travelling segment).
@@ -311,6 +316,14 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
     const bx = [12, 30, 50, 68, 86];
     fxCss += `.blood{position:absolute;top:-2px;width:4px;z-index:3;pointer-events:none;border-radius:0 0 60% 60%;background:linear-gradient(180deg,#5a0000,${bBot});box-shadow:0 0 5px ${hexToRgba(bBot, 0.6)};animation:bdrip 2.8s ease-in infinite;}@keyframes bdrip{0%{height:0;top:-2px;opacity:0;}10%{opacity:.95;}55%{height:16px;}100%{height:8px;top:100%;opacity:0;}}`;
     fxEls += bx.map((x, i) => `<span class="blood" style="left:${x}%;animation-delay:${(i * 0.5).toFixed(2)}s;"></span>`).join('');
+  }
+  if (has('bloodrain') && !isStatic) {
+    // Confetti-style burst, but blood drops raining down. Always red (blood), or
+    // the fx color if one is set. Teardrop-ish droplets falling top -> bottom.
+    const bc = fxCol || '#ff2a2a';
+    const rx = [8, 20, 31, 44, 56, 68, 80, 90, 15, 50, 85];
+    fxCss += `.brain{position:absolute;top:-12px;width:5px;height:9px;z-index:4;pointer-events:none;opacity:0;border-radius:50% 50% 50% 50%/60% 60% 42% 42%;background:linear-gradient(180deg,#5a0000,${bc});box-shadow:0 0 4px ${hexToRgba(bc, 0.5)};animation:brain 1.5s ease-in both;}@keyframes brain{0%{top:-12px;opacity:0;}12%{opacity:1;}100%{top:112%;opacity:.15;}}`;
+    fxEls += rx.map((x, i) => `<span class="brain" style="left:${x}%;animation-delay:${(i * 0.09).toFixed(2)}s;"></span>`).join('');
   }
 
   const style = `

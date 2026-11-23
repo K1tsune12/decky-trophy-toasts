@@ -27,6 +27,7 @@ const FX_IDS = [
   'border', 'glowline', 'edgepulse', 'edgerainbow',       // outline
   'sparkles', 'stars', 'confetti',                        // particles
   'accentbar', 'comet', 'stamp', 'glint', 'shockwave', 'flash', 'blooddrip', // flair
+  'bloodrain', // particles (confetti-style blood drops) — kept last to preserve encoding
 ];
 const AMB_IDS = ['flow', 'hue', 'pulse', 'flow-pulse', 'breathe'];
 // Entrance animations, in the exact order of ANIMATIONS in themes.ts. The chosen

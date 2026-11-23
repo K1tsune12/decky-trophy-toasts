@@ -253,6 +253,7 @@ export const EFFECTS: EffectDef[] = [
   { id: 'sparkles', name: 'Sparkles', group: 'particles' },
   { id: 'stars', name: 'Stars', group: 'particles' },
   { id: 'confetti', name: 'Confetti', group: 'particles' },
+  { id: 'bloodrain', name: 'Blood rain', group: 'particles' },
   // Flair (combine freely)
   { id: 'accentbar', name: 'Left accent bar', group: 'flair' },
   { id: 'comet', name: 'Comet (down the bar)', group: 'flair' },
