@@ -12,7 +12,7 @@
 
 import { call } from '@decky/api';
 
-import { getFont, getTheme, resolveAccent, resolveFontStack, resolveFxColor } from './themes';
+import { defaultAmbient, defaultFx, getFont, getTheme, resolveAccent, resolveFontStack, resolveFxColor } from './themes';
 import { ToastData, ToastOptions, renderCaptureParts } from './toastWindow';
 
 const RENDER_SCALE = 2;        // rasterization oversampling (crisp when enlarged)
@@ -51,8 +51,12 @@ function hexRgb(hex: string): [number, number, number] {
 function encodeFlags(
   ctx: CanvasRenderingContext2D, cw: number, ch: number, opts: ToastOptions, icon: IconBox,
 ): void {
-  const fx = new Set(Array.isArray(opts.fx) ? opts.fx : []);
-  const amb = opts.ambient || '';
+  // Resolve exactly like the CSS does (buildParts): '' ambient = the theme's default
+  // ambient, missing fx = the theme defaults. Encoding the raw '' made the overlay
+  // drop the bar animation whenever the picker was on "Default".
+  const theme = getTheme(opts.themeId);
+  const fx = new Set(Array.isArray(opts.fx) ? opts.fx : defaultFx(theme.id, !!opts.rare));
+  const amb = opts.ambient || defaultAmbient(theme.id);
   const blocks = [
     true,                               // 0: magic marker
     ...FX_IDS.map((id) => fx.has(id)),  // 1..13: effects
@@ -73,6 +77,10 @@ function encodeFlags(
   // effect's own default; (0,0,0) tells the helper "unset, use defaults".
   const fxHex = resolveFxColor(opts.fxColor || '');
   const [fr, fg, fb] = fxHex ? hexRgb(fxHex) : [0, 0, 0];
+  // The theme's glow colour (the CSS bar pulse / card glow use it; '' = white 0.4).
+  // alpha 0 = the theme has no glow (no card box-shadow; the bar pulse uses white .4).
+  const gm = theme.glow ? /rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+))?\s*\)/.exec(theme.glow) : null;
+  const [gr, gg, gb, ga] = gm ? [+gm[1], +gm[2], +gm[3], gm[4] != null ? +gm[4] : 1] : [255, 255, 255, 0];
   // Numeric blocks (red channel, CSS px): radius, icon x/y/size, anim, accent, fx.
   const nums = [
     Math.min(40, Math.round(getTheme(opts.themeId).radius)), // 19: corner radius
@@ -82,6 +90,9 @@ function encodeFlags(
     fr, fg, fb,                                              // 27,28,29: fx color rgb
     br, bgc, bb,                                             // 30,31,32: accent B rgb
     Math.round(typeof opts.cardOpacity === 'number' ? opts.cardOpacity : 100), // 33: card opacity
+    gr, gg, gb, Math.round(ga * 100),                        // 34..37: theme glow rgb + alpha%
+    opts.layout === 'centered' ? 1 : 0,                      // 38: accent bar on TOP (no comet)
+    opts.rare ? 1 : 0,                                       // 39: rare (shimmer + glow pulse)
   ];
   nums.forEach((val, j) => {
     ctx.fillStyle = `rgb(${clamp(val)},0,0)`;
@@ -375,6 +386,15 @@ export async function hideOverlay(): Promise<void> {
 }
 
 /** Diagnostic: render + push a sample card, reporting each stage. */
+/** Test harness: the exact card PNG (with flag rows) and helper launch size that a
+ *  real unlock would send over the game — WITHOUT showing anything. */
+export async function renderCardDebug(data: ToastData, opts: ToastOptions): Promise<any> {
+  const card = await renderCard(data, opts);
+  if (!card) return null;
+  const size = displaySize(card.w, card.h);
+  return { png: card.png, w: size.w, h: size.h, anim: animFor(opts.animId), dur: Math.max(2000, opts.durationMs) };
+}
+
 export async function overlayDebug(data: ToastData, opts: ToastOptions): Promise<any> {
   const out: any = { stage: 'start' };
   try {

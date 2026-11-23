@@ -171,9 +171,12 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
   const fxSet: string[] = Array.isArray(opts.fx) ? opts.fx : defaultFx(theme.id, rare);
   const has = (f: string) => fxSet.includes(f);
   const r8 = Math.min(theme.radius, 8);
-  const rx = theme.radius > 0 ? 3 : 0; // edge-outline corner radius (viewBox units)
-  const edgeRect = (cls: string) => `<rect class="${cls}" x="1" y="1" width="98" height="98" rx="${rx}" pathLength="100"></rect>`;
-  const edgeSvg = (cls: string, inner: string) => `<svg class="${cls}" preserveAspectRatio="none" viewBox="0 0 100 100">${inner}</svg>`;
+  // Edge outline in REAL px (no stretched viewBox): same inset + corner radius as the
+  // cairo _edge(), and pathLength=100 then really normalizes the dash, so
+  // "22 78" is ONE segment = 22% of the perimeter (a stretched viewBox +
+  // non-scaling-stroke ignored pathLength and repeated the dash ~4x around).
+  const edgeRect = (cls: string) => `<rect class="${cls}" pathLength="100"></rect>`;
+  const edgeSvg = (cls: string, inner: string) => `<svg class="${cls}">${inner}</svg>`;
 
   // Ongoing "ambient" color animation on the accent bar (light, CSS-only).
   const ambient = opts.ambient || defaultAmbient(theme.id);
@@ -228,7 +231,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
 
   // Rare: pulsing gold glow around the card.
   const rareGlowKf = rare
-    ? `@keyframes trglow{0%,100%{box-shadow:inset 0 0 0 1px ${theme.border},0 0 14px rgba(255,197,92,0.42);}50%{box-shadow:inset 0 0 0 1px ${theme.border},0 0 34px rgba(255,197,92,0.72);}}`
+    ? `@keyframes trglow{0%,100%{box-shadow:inset 0 0 0 1px ${theme.border},0 0 14px ${hexToRgba(accB, 0.42)};}50%{box-shadow:inset 0 0 0 1px ${theme.border},0 0 34px ${hexToRgba(accB, 0.72)};}}`
     : '';
   const cardAnim = `kf_${anim.id} ${anim.timing} both${rare ? ',trglow 2.3s ease-in-out .5s infinite' : ''}`;
 
@@ -247,8 +250,10 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
   // The glow line lives OUTSIDE the card (which clips), so it never gets cut.
   let glowlineEl = '';
   if ((has('glowline') || has('edgepulse') || has('edgerainbow')) && !isStatic) {
-    fxCss += `.edgefx{position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;pointer-events:none;overflow:visible;display:block;}
-    .edgefx rect{fill:none;vector-effect:non-scaling-stroke;}`;
+    // The outline sits outside .card (so it never gets clipped) but must still enter
+    // with it, like the over-game render: same entrance animation + card opacity.
+    fxCss += `.edgefx{position:absolute;top:0;left:0;width:100%;height:100%;z-index:5;pointer-events:none;overflow:visible;display:block;animation:kf_${anim.id} ${anim.timing} both;${!opaque && cardA < 1 ? `opacity:${cardA};` : ''}}
+    .edgefx rect{fill:none;x:.75px;y:.75px;width:calc(100% - 1.5px);height:calc(100% - 1.5px);rx:${theme.radius}px;ry:${theme.radius}px;}`;
   }
   if (has('glowline') && !isStatic) {
     // Match the cairo over-game render: a FAINT continuous outline (gbase) + a soft,
@@ -275,7 +280,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
     glowlineEl += edgeSvg('edgefx erain', edgeRect('e'));
   }
   if (has('comet') && lay.dir === 'row' && !isStatic) {
-    fxCss += `.comet{position:absolute;left:-1px;width:4px;height:15px;border-radius:3px;z-index:3;pointer-events:none;background:linear-gradient(180deg,${hexToRgba('#ffffff', 0.9)},${hexToRgba(accB, 0.3)});box-shadow:0 0 7px ${hexToRgba(accA, 0.7)},0 0 16px ${hexToRgba(accB, 0.5)},0 0 26px ${hexToRgba(accB, 0.28)};filter:blur(0.6px);opacity:.9;animation:comet 2.6s ease-in-out .4s infinite;}@keyframes comet{0%{top:-18px;opacity:0;}14%{opacity:.9;}86%{opacity:.9;}100%{top:100%;opacity:0;}}`;
+    fxCss += `.comet{position:absolute;left:-1px;width:4px;height:15px;border-radius:3px;z-index:3;pointer-events:none;background:linear-gradient(180deg,${hexToRgba('#ffffff', 0.9)},${hexToRgba(accB, 0.3)});box-shadow:0 0 7px ${hexToRgba(accA, 0.7)},0 0 16px ${hexToRgba(accB, 0.5)},0 0 26px ${hexToRgba(accB, 0.28)};filter:blur(0.6px);opacity:.9;animation:comet 2.6s ease-in-out .4s infinite both;}@keyframes comet{0%{top:-18px;opacity:0;}14%{opacity:.9;}86%{opacity:.9;}100%{top:100%;opacity:0;}}`;
     fxEls += '<div class="comet"></div>';
   }
   if (has('flash') && !isStatic) {
@@ -288,7 +293,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
     const dot = fxCol || '#ffe9a8';
     const g1 = fxCol || '#ffd166';
     const g2 = fxCol ? hexToRgba(fxCol, 0.6) : 'rgba(255,200,90,0.6)';
-    fxCss += `.spark{position:absolute;width:5px;height:5px;border-radius:50%;background:${dot};box-shadow:0 0 6px ${g1},0 0 10px ${g2};pointer-events:none;z-index:4;animation:twinkle 1.7s ease-in-out infinite;}@keyframes twinkle{0%,100%{opacity:0;transform:scale(.4);}50%{opacity:1;transform:scale(1.1);}}`;
+    fxCss += `.spark{position:absolute;width:5px;height:5px;border-radius:50%;background:${dot};box-shadow:0 0 6px ${g1},0 0 10px ${g2};pointer-events:none;z-index:4;animation:twinkle 1.7s ease-in-out infinite both;}@keyframes twinkle{0%,100%{opacity:0;transform:scale(.4);}50%{opacity:1;transform:scale(1.1);}}`;
     fxEls += sp.map((p, i) => `<span class="spark" style="left:${p[0]}%;top:${p[1]}%;animation-delay:${(i * 0.28).toFixed(2)}s;"></span>`).join('');
   }
   if (has('stars') && !isStatic) {
@@ -296,7 +301,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
     const col = fxCol || '#fff3c4';
     const g1 = fxCol || '#ffe08a';
     const g2 = fxCol ? hexToRgba(fxCol, 0.8) : 'rgba(255,210,120,0.8)';
-    fxCss += `.star{position:absolute;color:${col};font-size:12px;line-height:1;pointer-events:none;z-index:4;text-shadow:0 0 6px ${g1},0 0 12px ${g2};animation:startw 1.6s ease-in-out infinite;}@keyframes startw{0%,100%{opacity:0;transform:scale(.3) rotate(0deg);}50%{opacity:1;transform:scale(1) rotate(28deg);}}`;
+    fxCss += `.star{position:absolute;color:${col};font-size:12px;line-height:1;pointer-events:none;z-index:4;text-shadow:0 0 6px ${g1},0 0 12px ${g2};animation:startw 1.6s ease-in-out infinite both;}@keyframes startw{0%,100%{opacity:0;transform:scale(.3) rotate(0deg);}50%{opacity:1;transform:scale(1) rotate(28deg);}}`;
     fxEls += st.map((p, i) => `<span class="star" style="left:${p[0]}%;top:${p[1]}%;animation-delay:${(i * 0.15).toFixed(2)}s;">✦</span>`).join('');
   }
   if (has('glint') && !isStatic) {
@@ -354,7 +359,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
   ${allKeyframes}
   ${iconFxCss}
   ${fxCss}
-  ${isStatic ? `.cardwrap,.cardwrap *,.card,.card::before,.card::after,.icwrap::before,.icwrap::after{animation:none!important;}${rare ? `.card{box-shadow:inset 0 0 0 1px ${theme.border},0 0 26px rgba(255,197,92,0.6)!important;}` : ''}` : ''}
+  ${isStatic ? `.cardwrap,.cardwrap *,.card,.card::before,.card::after,.icwrap::before,.icwrap::after{animation:none!important;}${rare ? `.card{box-shadow:inset 0 0 0 1px ${theme.border},0 0 26px ${hexToRgba(accB, 0.6)}!important;}` : ''}` : ''}
   `;
   const body = `<div class="wrap"><div class="cardwrap">
     <div class="card" id="card">

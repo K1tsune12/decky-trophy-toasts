@@ -8,11 +8,11 @@
 // pre-warm that per app on game launch so the toast shows with no network wait.
 
 import { t } from './i18n';
-import { enqueueOverlay, overlayDebug } from './overlay';
+import { enqueueOverlay, overlayDebug, renderCardDebug } from './overlay';
 import { buildOpts, resolveLook } from './presets';
 import { AchSettings, getSettings } from './settings';
 import { SoundPlayer } from './sound';
-import { ToastData, ToastOptions, ToastWindow } from './toastWindow';
+import { ToastData, ToastOptions, ToastWindow, renderPreviewHtml } from './toastWindow';
 
 const w = window as any;
 const ACHIEVEMENT_ETYPE = 5;
@@ -92,6 +92,17 @@ export class AchievementWatcher {
         const pct = rare ? 2.3 : 47.5;
         const name = rare ? t('toast.sampleRare') : t('toast.sampleCommon');
         return overlayDebug(this.toData(name, undefined, pct), this.opts(!!rare, s));
+      },
+      // Test harness (preview-vs-overlay parity): the in-panel preview HTML and the
+      // over-game card PNG for a given style override. Shows nothing on screen.
+      renderDebug: async (rare: boolean, style: any) => {
+        const s = getSettings();
+        const pct = rare ? 2.3 : 47.5;
+        const name = rare ? t('toast.sampleRare') : t('toast.sampleCommon');
+        const data = this.toData(name, undefined, pct);
+        const o: ToastOptions = { ...this.opts(!!rare, s), ...(style || {}) };
+        delete (o as any).onShow;
+        return { previewHtml: renderPreviewHtml(data, o), card: await renderCardDebug(data, o) };
       },
     };
     return ok;

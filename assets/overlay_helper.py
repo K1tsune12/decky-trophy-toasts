@@ -21,6 +21,7 @@ Usage:
 """
 import argparse
 import math
+import os
 import subprocess
 import time
 import traceback
@@ -81,9 +82,14 @@ def read_flags(pixbuf, h):
         fxc = (num(rblock + 8), num(rblock + 9), num(rblock + 10))  # 27,28,29: fx color
         accb = (num(rblock + 11), num(rblock + 12), num(rblock + 13))  # 30,31,32: accent B
         copac = num(rblock + 14)                       # 33: whole-card opacity (0..100)
+        glow = (num(rblock + 15), num(rblock + 16), num(rblock + 17))  # 34..36: theme glow
+        glowa = num(rblock + 18)                       # 37: glow alpha (0..100)
+        acctop = num(rblock + 19) > 0                  # 38: accent bar on top (centered)
+        rare = num(rblock + 20) > 0                    # 39: rare tier (shimmer + glow pulse)
         return {"magic": True, "fx": fx, "ambient": ambient, "radius": radius,
                 "icon": icon, "anim": anim, "accent": acc, "fxcolor": fxc,
-                "accentb": accb, "cardopacity": copac}
+                "accentb": accb, "cardopacity": copac, "glow": glow, "glowa": glowa,
+                "acctop": acctop, "rare": rare}
     except Exception:  # noqa: BLE001  pylint: disable=broad-except
         return {}
 
@@ -113,6 +119,8 @@ def parse_args():
     p.add_argument("--anim", default="slide", choices=["slide", "fade", "none"])
     p.add_argument("--count", type=int, default=1, help="frames in the vertical sprite sheet")
     p.add_argument("--fps", type=int, default=12, help="flipbook playback rate")
+    p.add_argument("--dump-dir", default="", help="test harness: write frames here and exit")
+    p.add_argument("--dump-times", default="", help="comma-separated ms for --dump-dir")
     return p.parse_args()
 
 
@@ -263,10 +271,6 @@ def main():
     if card_w != sheet_w or card_h != card_src_h:
         card_pb = card_pb.scale_simple(card_w, card_h, GdkPixbuf.InterpType.BILINEAR)
     card0 = Gdk.cairo_surface_create_from_pixbuf(card_pb, 1, None)
-    try:
-        card_pb.savev("/tmp/ktt_card.png", "png", [], [])  # debug: the cropped card
-    except Exception:  # noqa: BLE001  pylint: disable=broad-except
-        pass
     # Use the EXACT accent color the card was styled with (encoded in the PNG), so
     # a white theme bar is never mistaken for gold. Fall back to pixel-sampling.
     _ac = flags.get("accent", (0, 0, 0))
@@ -285,6 +289,16 @@ def main():
                 if (_ab[0] or _ab[1] or _ab[2]) else accent)
     # Whole-card opacity (fades card + effects together); default fully opaque.
     card_opacity = max(0.0, min(1.0, flags.get("cardopacity", 100) / 100.0))
+    # Theme glow colour (CSS bar pulse uses it) and whether the accent bar sits on top
+    # (the "centered" layout: 4px top bar, no comet).
+    _gl = flags.get("glow", (0, 0, 0))
+    if flags.get("glowa", 0) > 0:
+        glow_col = (_gl[0] / 255.0, _gl[1] / 255.0, _gl[2] / 255.0)
+        glow_a = flags.get("glowa", 40) / 100.0
+    else:
+        glow_col, glow_a = (1.0, 1.0, 1.0), 0.4      # CSS: theme.glow || white .4
+    has_card_glow = flags.get("glowa", 0) > 0        # CSS: box-shadow 0 0 16px glow
+    acc_top = bool(flags.get("acctop", False))
     # The card is rendered at RENDER_SCALE=2 (css->sheet), then shown at card_w.
     rscale = (2.0 * card_w / sheet_w) if sheet_w else 1.0
     disp_radius = flags.get("radius", 0) * rscale
@@ -334,77 +348,127 @@ def main():
     log("screen=%dx%d card=%dx%d pos=%d,%d" % (screen_w, screen_h, card_w, card_h, pos_x, pos_y))
 
     anim = {"start": time.monotonic()}
-    enter_ms = 0 if args.anim == "none" else 460
-    exit_ms = 0 if args.anim == "none" else 300
-    hold_end = max(enter_ms, args.dur_ms - exit_ms)
-
-    def ease_out(t):
-        t = max(0.0, min(1.0, t))
-        return 1 - (1 - t) ** 3
-
-    def ease_out_back(t):
-        t = max(0.0, min(1.0, t))
-        c1 = 1.70158
-        c3 = c1 + 1.0
-        return 1.0 + c3 * ((t - 1) ** 3) + c1 * ((t - 1) ** 2)
-
     anim_id = flags.get("anim", "slide-down")
-
-    # --- Live effects drawn in cairo at ~30fps over the static card ---
-    # Effects use the real theme `accent` directly (rich/saturated); brightening it
-    # toward white washed saturated colors (e.g. gold) out to a dull pale yellow.
     fxset = flags.get("fx", set())
     ambient = flags.get("ambient", "")
-    glow_cache = {}   # perimeter points for the glowline (computed once)
-    spark_pos = [(0.14, 0.30), (0.30, 0.70), (0.45, 0.20), (0.58, 0.76),
-                 (0.70, 0.36), (0.82, 0.62), (0.90, 0.26), (0.24, 0.52)]
-    star_pos = [(0.10, 0.30), (0.20, 0.68), (0.33, 0.22), (0.44, 0.78), (0.55, 0.32),
-                (0.64, 0.70), (0.74, 0.26), (0.82, 0.60), (0.90, 0.40), (0.28, 0.52),
-                (0.50, 0.58), (0.70, 0.46)]
+    rare = bool(flags.get("rare", False))
+    S = rscale                                    # display px per CSS px
 
-    def enter_transform(el):
-        """(alpha, dx, dy, sx, sy) for the selected entrance animation, matching
-        the CSS @keyframes in themes.ts as closely as cairo allows."""
-        if not enter_ms or el >= enter_ms:
-            return 1.0, 0.0, 0.0, 1.0, 1.0
-        raw = el / enter_ms
-        e = ease_out(raw)
-        aid = anim_id
-        if aid == "fade":
-            return min(1.0, raw / 0.6), 0.0, 0.0, 1.0, 1.0
-        if aid == "slide-up":
-            return e, 0.0, (1 - e) * 44, 1.0, 1.0
-        if aid == "slide-left":
-            return e, -(1 - e) * 64, 0.0, 1.0, 1.0
-        if aid == "slide-right":
-            return e, (1 - e) * 64, 0.0, 1.0, 1.0
-        if aid == "pop":
-            s = 0.82 + 0.18 * ease_out_back(raw)       # scale .82 -> 1 w/ overshoot
-            return min(1.0, raw / 0.4), 0.0, 0.0, s, s
-        if aid == "bounce":
-            if raw < 0.6:                               # dip down + grow
-                q = ease_out(raw / 0.6)
-                dy = -40.0 + 48.0 * q                   # -40 -> +8
-                s = 0.9 + 0.12 * q                      # .9 -> 1.02
-            else:                                       # settle back
-                q = ease_out((raw - 0.6) / 0.4)
-                dy = 8.0 - 8.0 * q                      # +8 -> 0
-                s = 1.02 - 0.02 * q                     # 1.02 -> 1
-            return min(1.0, raw / 0.3), 0.0, dy, s, s
-        if aid == "flip":
-            sy = 0.12 + 0.88 * e                        # squashed -> full (fake rotateX)
-            return e, 0.0, 0.0, 1.0, sy
-        if aid == "glow-in":
-            s = 1.05 - 0.05 * e                         # 1.05 -> 1 (brightness approx)
-            return min(1.0, raw / 0.5), 0.0, 0.0, s, s
-        return e, 0.0, -(1 - e) * 44, 1.0, 1.0          # slide-down (default)
+    # ---------------------------------------------------------------------------
+    # CSS-faithful animation engine. Every effect mirrors its CSS rule in
+    # toastWindow.ts: same @keyframes, timing functions, delays, colours and sizes
+    # (CSS px * S), so the over-game toast matches the in-panel preview.
+    # ---------------------------------------------------------------------------
+    def _bezier(p1x, p1y, p2x, p2y):
+        def x_of(t):
+            u = 1.0 - t
+            return 3 * u * u * t * p1x + 3 * u * t * t * p2x + t * t * t
 
-    def exit_phase(el):
-        """(alpha, dy) while exiting, else None."""
-        if exit_ms and el > hold_end:
-            p = ease_out((el - hold_end) / exit_ms)
-            return max(0.0, 1 - p), -p * 34
-        return None
+        def y_of(t):
+            u = 1.0 - t
+            return 3 * u * u * t * p1y + 3 * u * t * t * p2y + t * t * t
+
+        def dx_of(t):
+            u = 1.0 - t
+            return 3 * u * u * p1x + 6 * u * t * (p2x - p1x) + 3 * t * t * (1 - p2x)
+
+        def f(x):
+            if x <= 0.0:
+                return 0.0
+            if x >= 1.0:
+                return 1.0
+            t = x
+            for _ in range(8):
+                d = x_of(t) - x
+                if abs(d) < 1e-5:
+                    return y_of(t)
+                dd = dx_of(t)
+                if abs(dd) < 1e-6:
+                    break
+                t = min(1.0, max(0.0, t - d / dd))
+            lo, hi = 0.0, 1.0
+            t = x
+            for _ in range(30):
+                if x_of(t) < x:
+                    lo = t
+                else:
+                    hi = t
+                t = (lo + hi) / 2.0
+            return y_of(t)
+        return f
+
+    def LINEAR(x):
+        return max(0.0, min(1.0, x))
+
+    EASE = _bezier(0.25, 0.1, 0.25, 1.0)
+    EASE_IN = _bezier(0.42, 0.0, 1.0, 1.0)
+    EASE_OUT = _bezier(0.0, 0.0, 0.58, 1.0)
+    EASE_IN_OUT = _bezier(0.42, 0.0, 0.58, 1.0)
+
+    def prog(el, dur, delay=0.0, infinite=False, fill=True):
+        """CSS iteration progress 0..1 at time el; None = before the delay with
+        animation-fill-mode none (the element's base style applies)."""
+        t = el - delay
+        if t < 0:
+            return 0.0 if fill else None
+        if infinite:
+            return (t % dur) / dur
+        return min(1.0, t / dur)
+
+    def kf(p, stops, timing):
+        """One property's value at progress p. stops = [(offset, value), ...];
+        the timing function applies per keyframe segment, as in CSS."""
+        if p <= stops[0][0]:
+            return stops[0][1]
+        for (o0, v0), (o1, v1) in zip(stops, stops[1:]):
+            if p <= o1:
+                q = timing((p - o0) / (o1 - o0)) if o1 > o0 else 1.0
+                if isinstance(v0, tuple):
+                    return tuple(a + (b - a) * q for a, b in zip(v0, v1))
+                return v0 + (v1 - v0) * q
+        return stops[-1][1]
+
+    def hx(h):
+        h = h.lstrip("#")
+        return (int(h[0:2], 16) / 255.0, int(h[2:4], 16) / 255.0, int(h[4:6], 16) / 255.0)
+
+    # Soft (blurred) shapes: draw at 1/d scale, upscale smoothly (~gaussian blur of
+    # sigma = d/2). Used for box-shadow / drop-shadow / text-shadow. Cached.
+    _soft_cache = {}
+
+    def soft(key, sigma, w, h, draw):
+        sq = max(0.0, round(sigma * 2.0) / 2.0)
+        ck = (key, sq)
+        hit = _soft_cache.get(ck)
+        if hit is not None:
+            return hit
+        m = int(3 * sq) + 3
+        d = max(1.0, 2.0 * sq)
+        sw = max(1, int((w + 2 * m) / d) + 2)
+        sh = max(1, int((h + 2 * m) / d) + 2)
+        surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, sw, sh)
+        c = cairo.Context(surf)
+        c.scale(1.0 / d, 1.0 / d)
+        c.translate(m, m)
+        draw(c)
+        surf.flush()
+        hit = (surf, d, m)
+        if len(_soft_cache) > 600:
+            _soft_cache.clear()
+        _soft_cache[ck] = hit
+        return hit
+
+    def paint_soft(cr, st, alpha, ox=0.0, oy=0.0):
+        if alpha <= 0.001:
+            return
+        surf, d, m = st
+        cr.save()
+        cr.translate(ox - m, oy - m)
+        cr.scale(d, d)
+        cr.set_source_surface(surf, 0, 0)
+        cr.get_source().set_filter(cairo.FILTER_BILINEAR)
+        cr.paint_with_alpha(min(1.0, alpha))
+        cr.restore()
 
     def _rrect_path(cr, x, y, w, h, r):
         r = max(0.0, min(r, w / 2.0, h / 2.0))
@@ -422,19 +486,194 @@ def main():
         return [(v, t, p), (q, v, p), (p, v, t), (p, q, v), (t, p, v), (v, p, q)][i]
 
     def _edge():
-        inset = 1.5
+        # CSS .edgefx rect: inset .75px, corner radius = the card radius.
+        inset = 0.75 * S
         w, h = card_w - 2 * inset, card_h - 2 * inset
         return inset, inset, w, h, max(0.0, min(disp_radius, w / 2.0, h / 2.0))
 
-    # Outline group (exclusive) --------------------------------------------------
-    def fx_border(_el, cr):
-        x, y, w, h, r = _edge()
-        if w <= 0 or h <= 0:
+    def clip_card(cr):
+        _rrect_path(cr, 0, 0, card_w, card_h, disp_radius)
+        cr.clip()
+
+    # --- entrance / exit: the exact CSS @keyframes from themes.ts ---------------
+    # (dur ms, timing, {prop: stops}) ; props: op, tx, ty (CSS px), s, sy, br
+    ENTRANCES = {
+        "slide-down": (500, _bezier(.16, 1, .3, 1), {"op": [(0, 0.0), (1, 1.0)], "ty": [(0, -44.0), (1, 0.0)]}),
+        "slide-up": (500, _bezier(.16, 1, .3, 1), {"op": [(0, 0.0), (1, 1.0)], "ty": [(0, 44.0), (1, 0.0)]}),
+        "slide-left": (500, _bezier(.16, 1, .3, 1), {"op": [(0, 0.0), (1, 1.0)], "tx": [(0, -70.0), (1, 0.0)]}),
+        "slide-right": (500, _bezier(.16, 1, .3, 1), {"op": [(0, 0.0), (1, 1.0)], "tx": [(0, 70.0), (1, 0.0)]}),
+        "fade": (450, EASE, {"op": [(0, 0.0), (1, 1.0)]}),
+        "pop": (450, _bezier(.2, 1.3, .4, 1), {"op": [(0, 0.0), (1, 1.0)], "s": [(0, 0.82), (1, 1.0)]}),
+        "bounce": (600, _bezier(.2, .9, .3, 1.2), {"op": [(0, 0.0), (0.6, 1.0), (1, 1.0)],
+                                                   "ty": [(0, -40.0), (0.6, 8.0), (1, 0.0)],
+                                                   "s": [(0, 0.9), (0.6, 1.02), (1, 1.0)]}),
+        "flip": (550, _bezier(.2, 1, .3, 1), {"op": [(0, 0.0), (1, 1.0)], "rx": [(0, -80.0), (1, 0.0)]}),
+        "glow-in": (550, EASE_OUT, {"op": [(0, 0.0), (1, 1.0)], "s": [(0, 1.05), (1, 1.0)],
+                                    "br": [(0, 0.8), (1, 0.0)]}),
+    }
+    enter_on = args.anim != "none"
+    exit_ms = 340.0 if enter_on else 0.0               # CSS kf_out .34s ease-in
+    hold_end = max(0.0, args.dur_ms - exit_ms)
+
+    def card_state(el):
+        """(opacity, tx, ty, scale, scale_y, brightness+) of the card at time el."""
+        op, tx, ty, sc, sy, br = 1.0, 0.0, 0.0, 1.0, 1.0, 0.0
+        if enter_on:
+            dur, timing, props = ENTRANCES.get(anim_id, ENTRANCES["slide-down"])
+            p = prog(el, dur)
+            if p < 1.0:
+                if "op" in props:
+                    op = kf(p, props["op"], timing)
+                if "tx" in props:
+                    tx = kf(p, props["tx"], timing) * S
+                if "ty" in props:
+                    ty = kf(p, props["ty"], timing) * S
+                if "s" in props:
+                    sc = kf(p, props["s"], timing)
+                if "rx" in props:                      # rotateX: foreshortened height
+                    sy = max(0.02, math.cos(math.radians(kf(p, props["rx"], timing))))
+                if "br" in props:
+                    br = max(0.0, kf(p, props["br"], timing))
+        if exit_ms and el > hold_end:                  # kf_out: fade up + shrink
+            q = prog(el, exit_ms, hold_end)
+            op *= kf(q, [(0, 1.0), (1, 0.0)], EASE_IN)
+            ty += kf(q, [(0, 0.0), (1, -22.0)], EASE_IN) * S
+            sc *= kf(q, [(0, 1.0), (1, 0.98)], EASE_IN)
+        return max(0.0, min(1.0, op)), tx, ty, sc, sy, br
+
+    # --- card outer glow: CSS box-shadow (theme glow, or the rare trglow pulse) ---
+    def card_shadow(cr, color, alpha, blur_css):
+        if blur_css <= 0 or alpha <= 0.002:
             return
-        _rrect_path(cr, x, y, w, h, r)
-        cr.set_line_width(2.2)
-        cr.set_source_rgba(accent[0], accent[1], accent[2], 0.85)
+        sigma = blur_css * S / 2.0
+
+        def draw(c):
+            _rrect_path(c, 0, 0, card_w, card_h, disp_radius)
+            c.set_source_rgb(*color)
+            c.fill()
+        st = soft(("cardshadow", color), sigma, card_w, card_h, draw)
+        cr.save()
+        big = 6 * sigma + 20
+        cr.set_fill_rule(cairo.FILL_RULE_EVEN_ODD)     # never painted under the box
+        cr.rectangle(-big, -big, card_w + 2 * big, card_h + 2 * big)
+        _rrect_path(cr, 0, 0, card_w, card_h, disp_radius)
+        cr.clip()
+        paint_soft(cr, st, alpha)
+        cr.restore()
+
+    def fx_card_glow(el, cr):
+        if rare:                                       # trglow 2.3s ease-in-out .5s infinite
+            p = prog(el, 2300, 500, infinite=True, fill=False)
+            if p is not None:
+                s_ = kf(p, [(0, 0.0), (0.5, 1.0), (1, 0.0)], EASE_IN_OUT)
+                card_shadow(cr, accent_b, 0.42 + 0.30 * s_, 14.0 + 20.0 * s_)
+                return
+        if has_card_glow:                              # static: box-shadow 0 0 16px glow
+            card_shadow(cr, glow_col, glow_a, 16.0)
+
+    # --- outline group ----------------------------------------------------------
+    def _conic_color(u):
+        # conic-gradient(A, B, A, B, A): stops at 0, 25, 50, 75, 100%
+        u = u % 1.0
+        seg = int(u * 4)
+        f = u * 4 - seg
+        c0, c1 = (accent, accent_b) if seg % 2 == 0 else (accent_b, accent)
+        return tuple(a + (b - a) * f for a, b in zip(c0, c1))
+
+    _conic = {}
+
+    def fx_border(el, cr):
+        # CSS .brd: a 2px ring (inset -1px, clipped by the card -> 1px visible inside
+        # the edge) filled with a conic-gradient(A,B,A,B,A) rotating 360deg / 3.2s.
+        cx, cy = card_w / 2.0, card_h / 2.0
+        if "mesh" not in _conic:
+            R = math.hypot(card_w, card_h)
+            mp = cairo.MeshPattern()
+            n = 48
+            for k in range(n):
+                a0, a1 = 2 * math.pi * k / n, 2 * math.pi * (k + 1) / n
+                c0, c1 = _conic_color(k / float(n)), _conic_color((k + 1) / float(n))
+                mp.begin_patch()
+                mp.move_to(cx, cy)
+                mp.line_to(cx + R * math.sin(a0), cy - R * math.cos(a0))
+                mp.line_to(cx + R * math.sin(a1), cy - R * math.cos(a1))
+                mp.line_to(cx, cy)
+                mp.set_corner_color_rgb(0, *c0)
+                mp.set_corner_color_rgb(1, *c0)
+                mp.set_corner_color_rgb(2, *c1)
+                mp.set_corner_color_rgb(3, *c1)
+                mp.end_patch()
+            _conic["mesh"] = mp
+        mp = _conic["mesh"]
+        ang = 2 * math.pi * prog(el, 3200, infinite=True)
+        m = cairo.Matrix()
+        m.translate(cx, cy)
+        m.rotate(-ang)
+        m.translate(-cx, -cy)
+        mp.set_matrix(m)
+        cr.save()
+        clip_card(cr)
+        _rrect_path(cr, 0.5 * S, 0.5 * S, card_w - S, card_h - S, max(0.0, disp_radius - 0.5 * S))
+        cr.set_line_width(1.0 * S)
+        cr.set_source(mp)
         cr.stroke()
+        cr.restore()
+
+    def _edge_soft(key, sigma, width):
+        x, y, w, h, r = _edge()
+
+        def draw(c):
+            _rrect_path(c, x, y, w, h, r)
+            c.set_line_width(width)
+            c.set_source_rgb(1, 1, 1)
+            c.stroke()
+        return soft(("edge", key, round(width, 2)), sigma, card_w, card_h, draw)
+
+    def _paint_tinted(cr, st, color, alpha):
+        # paint a white soft shape tinted with `color` at `alpha`
+        surf, d, m = st
+        cr.save()
+        cr.translate(-m, -m)
+        cr.scale(d, d)
+        cr.set_source_rgba(color[0], color[1], color[2], min(1.0, alpha))
+        pat = cairo.SurfacePattern(surf)
+        pat.set_filter(cairo.FILTER_BILINEAR)
+        cr.mask(pat)
+        cr.restore()
+
+    def _edge_stroke(cr, color, alpha, width):
+        x, y, w, h, r = _edge()
+        _rrect_path(cr, x, y, w, h, r)
+        cr.set_line_width(width)
+        cr.set_source_rgba(color[0], color[1], color[2], alpha)
+        cr.stroke()
+
+    def fx_edgepulse(el, cr):
+        # CSS .epulse rect: stroke accB 2.5px; epulse 1.9s ease-in-out infinite:
+        # 0/100% drop-shadow(0 0 2px accB) opacity .78 ; 50% drop-shadow(0 0 6px accB)
+        # drop-shadow(0 0 13px accA) opacity 1.
+        p = prog(el, 1900, infinite=True)
+        s_ = kf(p, [(0, 0.0), (0.5, 1.0), (1, 0.0)], EASE_IN_OUT)
+        op = 0.78 + 0.22 * s_
+        w = 2.5 * S
+        cr.push_group()
+        if s_ > 0.01:
+            _paint_tinted(cr, _edge_soft("ds13", 13.0 * s_ * S / 2.0, w), accent, s_)
+        _paint_tinted(cr, _edge_soft("ds2", (2.0 + 4.0 * s_) * S / 2.0, w), accent_b, 1.0)
+        _edge_stroke(cr, accent_b, 1.0, w)
+        cr.pop_group_to_source()
+        cr.paint_with_alpha(op)
+
+    def fx_edgerainbow(el, cr):
+        # CSS .erain rect: stroke accB 2.5px, drop-shadow 4px -> 5px, hue-rotate
+        # 0 -> 360deg over 4s linear (the shadow rotates too).
+        p = prog(el, 4000, infinite=True)
+        col = _hue_rotate(accent_b, 360.0 * p)
+        w = 2.5 * S
+        _paint_tinted(cr, _edge_soft("ds4", (4.0 + p) * S / 2.0, w), col, 1.0)
+        _edge_stroke(cr, col, 1.0, w)
+
+    glow_cache = {}   # perimeter points for the glowline (computed once)
 
     def fx_glowline(el, cr):
         x, y, w, h, r = _edge()
@@ -507,449 +746,558 @@ def main():
             cr.stroke()
         cr.restore()
 
-    def fx_edgepulse(el, cr):
-        x, y, w, h, r = _edge()
-        if w <= 0 or h <= 0:
-            return
-        a = 0.4 + 0.55 * (0.5 + 0.5 * math.sin(el / 1000.0 * (2 * math.pi / 1.9)))  # epulse 1.9s
-        _rrect_path(cr, x, y, w, h, r)
-        cr.set_line_width(4.0)
-        cr.set_source_rgba(accent[0], accent[1], accent[2], 0.22)
-        cr.stroke()
-        _rrect_path(cr, x, y, w, h, r)
-        cr.set_line_width(2.4)
-        cr.set_source_rgba(accent[0], accent[1], accent[2], a)
-        cr.stroke()
+    # --- particles group --------------------------------------------------------
+    def _soft_disk(color, radius, sigma):
+        def draw(c):
+            c.arc(radius, radius, radius, 0, 2 * math.pi)
+            c.set_source_rgb(*color)
+            c.fill()
+        return soft(("disk", color, round(radius, 2)), sigma, 2 * radius, 2 * radius, draw)
 
-    def fx_edgerainbow(el, cr):
-        x, y, w, h, r = _edge()
-        if w <= 0 or h <= 0:
-            return
-        rr, gg, bb = _hsv((el * 0.09) % 360.0, 0.75, 1.0)   # erain 4s per full hue cycle
-        _rrect_path(cr, x, y, w, h, r)
-        cr.set_line_width(2.6)
-        cr.set_source_rgba(rr, gg, bb, 0.92)
-        cr.stroke()
+    SPARKS = [(12, 24), (82, 16), (56, 80), (90, 66), (30, 86), (70, 38)]
 
-    # Particle group (exclusive) -------------------------------------------------
-    def fx_particles(el, cr, pts, speed, shape):
-        # CSS sparkles/stars are warm-white by default, or the user's fx color.
-        pc = fxcol if fxcol else (1.0, 0.91, 0.66)
-        t = el / 1000.0
-        for i, (fx, fy) in enumerate(pts):
-            tw = 0.5 + 0.5 * math.sin(t * speed + i * 1.27)
-            if tw < 0.12:
+    def fx_sparkles(el, cr):
+        # CSS .spark: 5px dot (fx colour or #ffe9a8), box-shadow 0 0 6px g1, 0 0 10px
+        # g2; twinkle 1.7s ease-in-out infinite both, delay i*.28s:
+        # 0/100% opacity 0 scale .4 ; 50% opacity 1 scale 1.1.
+        dot = fxcol or hx("ffe9a8")
+        g1 = fxcol or hx("ffd166")
+        g2, g2a = (fxcol, 0.6) if fxcol else ((1.0, 200 / 255.0, 90 / 255.0), 0.6)
+        rad = 2.5 * S
+        for i, (lx, ty) in enumerate(SPARKS):
+            p = prog(el, 1700, i * 280, infinite=True)
+            s_ = kf(p, [(0, 0.0), (0.5, 1.0), (1, 0.0)], EASE_IN_OUT)
+            if s_ <= 0.01:
                 continue
+            sc = 0.4 + 0.7 * s_
+            cx, cy = lx / 100.0 * card_w + rad, ty / 100.0 * card_h + rad
             cr.save()
-            cr.translate(fx * card_w, fy * card_h)
-            cr.set_source_rgba(pc[0], pc[1], pc[2], 0.2 + 0.7 * tw)
-            if shape == "dot":                       # sparkles: small round dots
-                cr.arc(0, 0, 1.6 + 2.4 * tw, 0, 2 * math.pi)
-                cr.fill()
-            else:                                    # stars: 4-point sparkle
-                s = 2.0 + 3.4 * tw
-                cr.move_to(0, -s * 1.9)
-                cr.line_to(s * 0.5, 0)
-                cr.line_to(0, s * 1.9)
-                cr.line_to(-s * 0.5, 0)
-                cr.close_path()
-                cr.fill()
-                cr.move_to(-s * 1.9, 0)
-                cr.line_to(0, s * 0.5)
-                cr.line_to(s * 1.9, 0)
-                cr.line_to(0, -s * 0.5)
-                cr.close_path()
-                cr.fill()
+            cr.translate(cx, cy)
+            cr.scale(sc, sc)
+            cr.translate(-rad, -rad)
+            paint_soft(cr, _soft_disk(g2, rad, 5.0 * S), g2a * s_)
+            paint_soft(cr, _soft_disk(g1, rad, 3.0 * S), s_)
+            cr.arc(rad, rad, rad, 0, 2 * math.pi)
+            cr.set_source_rgba(dot[0], dot[1], dot[2], s_)
+            cr.fill()
             cr.restore()
+
+    STARS = [(8, 30), (22, 72), (40, 16), (52, 84), (66, 28), (78, 66), (88, 20), (94, 54),
+             (16, 50), (72, 48), (34, 62), (60, 74)]
+
+    def _star_path(c, r):
+        # the U+2726 four-pointed star: concave sides between 4 long points
+        k = r * 0.22
+        c.move_to(0, -r)
+        c.curve_to(k * 0.4, -k, k, -k * 0.4, r, 0)
+        c.curve_to(k, k * 0.4, k * 0.4, k, 0, r)
+        c.curve_to(-k * 0.4, k, -k, k * 0.4, -r, 0)
+        c.curve_to(-k, -k * 0.4, -k * 0.4, -k, 0, -r)
+        c.close_path()
+
+    def _soft_star(color, r, sigma):
+        def draw(c):
+            c.translate(r, r)
+            _star_path(c, r)
+            c.set_source_rgb(*color)
+            c.fill()
+        return soft(("star", color, round(r, 2)), sigma, 2 * r, 2 * r, draw)
+
+    def fx_stars(el, cr):
+        # CSS .star: the glyph ✦ 12px (fx colour or #fff3c4), text-shadow 0 0 6px g1,
+        # 0 0 12px g2; startw 1.6s ease-in-out infinite both, delay i*.15s:
+        # 0/100% opacity 0 scale .3 rotate 0 ; 50% opacity 1 scale 1 rotate 28deg.
+        col = fxcol or hx("fff3c4")
+        g1 = fxcol or hx("ffe08a")
+        g2, g2a = (fxcol, 0.8) if fxcol else ((1.0, 210 / 255.0, 120 / 255.0), 0.8)
+        r = 6.6 * S                                   # glyph half-height at 12px
+        box_w, box_h = 11.0 * S, 12.0 * S             # glyph advance x line box
+        for i, (lx, ty) in enumerate(STARS):
+            p = prog(el, 1600, i * 150, infinite=True)
+            s_ = kf(p, [(0, 0.0), (0.5, 1.0), (1, 0.0)], EASE_IN_OUT)
+            if s_ <= 0.01:
+                continue
+            sc = 0.3 + 0.7 * s_
+            cx = lx / 100.0 * card_w + box_w / 2.0
+            cy = ty / 100.0 * card_h + box_h / 2.0
+            cr.save()
+            cr.translate(cx, cy)
+            cr.rotate(math.radians(28.0 * s_))
+            cr.scale(sc, sc)
+            cr.translate(-r, -r)
+            paint_soft(cr, _soft_star(g2, r, 6.0 * S), g2a * s_)
+            paint_soft(cr, _soft_star(g1, r, 3.0 * S), s_)
+            cr.translate(r, r)
+            _star_path(cr, r)
+            cr.set_source_rgba(col[0], col[1], col[2], s_)
+            cr.fill()
+            cr.restore()
+
+    CONF_X = [10, 24, 38, 52, 66, 80, 92]
 
     def fx_confetti(el, cr):
-        cols = [fxcol] if fxcol else [(1, 0.82, 0.4), (1, 0.48, 0.1), (0.31, 0.71, 1),
-                                      (0.61, 1, 0.61), (1, 0.42, 0.82), (0.78, 0.61, 1)]
+        # CSS .conf: 6x9 pieces, ONE burst: conf 1.5s ease-in both, delay i*.07s:
+        # top -10px -> 112%, rotate 0 -> 380deg, opacity 0 -> 1 (10%) -> 0.
+        cols = [fxcol] if fxcol else [hx("ffd166"), hx("ff7a1a"), hx("4fb6ff"),
+                                      hx("9cff9c"), hx("ff6ad0"), hx("c89cff")]
         cr.save()
-        cr.rectangle(0, 0, card_w, card_h)
-        cr.clip()
-        n = 11
-        for i in range(n):
-            cx = (i + 0.5) / n * card_w
-            prog = (el / 1500.0 + i * 0.41) % 1.0
-            cy = prog * (card_h + 20) - 10
+        clip_card(cr)
+        for i, lx in enumerate(CONF_X):
+            p = prog(el, 1500, i * 70)
+            op = kf(p, [(0, 0.0), (0.1, 1.0), (1, 0.0)], EASE_IN)
+            if op <= 0.01:
+                continue
+            top = kf(p, [(0, -10.0 * S), (1, 1.12 * card_h)], EASE_IN)
+            rot = kf(p, [(0, 0.0), (1, 380.0)], EASE_IN)
             col = cols[i % len(cols)]
             cr.save()
-            cr.translate(cx, cy)
-            cr.rotate(el / 300.0 + i)
-            cr.set_source_rgba(col[0], col[1], col[2], 0.9)
-            cr.rectangle(-3, -4, 6, 8)
+            cr.translate(lx / 100.0 * card_w + 3.0 * S, top + 4.5 * S)
+            cr.rotate(math.radians(rot))
+            cr.rectangle(-3.0 * S, -4.5 * S, 6.0 * S, 9.0 * S)
+            cr.set_source_rgba(col[0], col[1], col[2], op)
             cr.fill()
             cr.restore()
         cr.restore()
+
+    RAIN_X = [8, 20, 31, 44, 56, 68, 80, 90, 15, 50, 85]
+
+    def _drop_path(c, w, h):
+        # border-radius 50%/60% 60% 42% 42%: a droplet, rounder at the bottom
+        rx = w / 2.0
+        c.move_to(0, h * 0.6)
+        c.curve_to(0, h * 0.25, rx * 0.45, 0, rx, 0)
+        c.curve_to(rx * 1.55, 0, w, h * 0.25, w, h * 0.6)
+        c.curve_to(w, h * 0.84, w * 0.78, h, rx, h)
+        c.curve_to(w * 0.22, h, 0, h * 0.84, 0, h * 0.6)
+        c.close_path()
 
     def fx_bloodrain(el, cr):
-        # Confetti-style burst, but blood drops raining down. Mirrors CSS .brain:
-        # teardrop-ish droplets (dark -> red) falling top -> bottom with a slight sway.
-        bc = fxcol if fxcol else (1.0, 0.16, 0.16)
-        dark = (0.30, 0.0, 0.0)
+        # CSS .brain: 5x9 droplets, ONE burst: brain 1.5s ease-in both, delay i*.09s:
+        # top -12px -> 112%, opacity 0 -> 1 (12%) -> .15; #5a0000 -> blood, glow 4px.
+        bc = fxcol or hx("ff2a2a")
+        dark = hx("5a0000")
+        w, h = 5.0 * S, 9.0 * S
         cr.save()
-        cr.rectangle(0, 0, card_w, card_h)
-        cr.clip()
-        n = 11
-        w_ = 5.0 * rscale
-        drop_h = 9.0 * rscale
-        for i in range(n):
-            prog = (el / 1500.0 + i * 0.41) % 1.0            # continuous fall, staggered
-            cx = (i + 0.5) / n * card_w + math.sin(el / 600.0 + i) * 3.0 * rscale
-            cy = (prog ** 1.3) * (card_h + 24.0 * rscale) - 12.0 * rscale  # accelerating
-            a = 0.9
-            if prog < 0.08:
-                a *= prog / 0.08
+        clip_card(cr)
+        for i, lx in enumerate(RAIN_X):
+            p = prog(el, 1500, i * 90)
+            op = kf(p, [(0, 0.0), (0.12, 1.0), (1, 0.15)], EASE_IN)
+            if op <= 0.01 or p >= 1.0:
+                continue
+            top = kf(p, [(0, -12.0 * S), (1, 1.12 * card_h)], EASE_IN)
+            x = lx / 100.0 * card_w
+            glow = soft(("drop", bc, round(w, 2)), 2.0 * S, w, h,
+                        lambda c: (_drop_path(c, w, h), c.set_source_rgb(*bc), c.fill()))
+            paint_soft(cr, glow, 0.5 * op, x, top)
             cr.save()
-            cr.translate(cx, cy)
-            grad = cairo.LinearGradient(0, -drop_h / 2.0, 0, drop_h / 2.0)
-            grad.add_color_stop_rgba(0.0, dark[0], dark[1], dark[2], a)
-            grad.add_color_stop_rgba(1.0, bc[0], bc[1], bc[2], a)
-            cr.set_source(grad)                              # locked to this translate space
-            cr.scale(w_ / 2.0, drop_h / 2.0)                 # unit circle -> drop ellipse
-            cr.arc(0, 0, 1.0, 0, 2 * math.pi)
+            cr.translate(x, top)
+            g = cairo.LinearGradient(0, 0, 0, h)
+            g.add_color_stop_rgba(0.0, dark[0], dark[1], dark[2], op)
+            g.add_color_stop_rgba(1.0, bc[0], bc[1], bc[2], op)
+            _drop_path(cr, w, h)
+            cr.set_source(g)
             cr.fill()
             cr.restore()
         cr.restore()
 
-    # Flair ----------------------------------------------------------------------
-    def fx_comet(el, cr):
-        # CSS .comet: a 5x16 capsule (white->accent) with a strong soft glow
-        # (box-shadow 0 0 10px #fff, 0 0 16px accent), sliding top->bottom down the
-        # left edge (comet 2.4s). Glowy + translucent, never a solid block.
-        cw_ = 4.0 * rscale
-        ch_ = 15.0 * rscale
-        glow_r = 22.0 * rscale                                  # soft, wide glow spread
-        prog = (el % 2600.0) / 2600.0                           # comet 2.6s
-        cy = -18.0 * rscale + prog * (card_h + 18.0 * rscale)   # top:-18px -> 100%
-        if prog < 0.14:
-            a = (prog / 0.14) * 0.9
-        elif prog > 0.86:
-            a = max(0.0, (1.0 - prog) / 0.14) * 0.9
-        else:
-            a = 0.9
-        cx = 1.0 * rscale + cw_ / 2.0
+    # --- flair -----------------------------------------------------------------
+    DRIP_X = [12, 30, 50, 68, 86]
+
+    def fx_blooddrip(el, cr):
+        # CSS .blood: 4px wide, bdrip 2.8s ease-in infinite, delay i*.5s: top -2px ->
+        # 100%, height 0 -> 16px (55%) -> 8px, opacity 0 -> .95 (10%) -> 0; rounded
+        # bottom, #5a0000 -> blood, glow 5px.
+        bc = fxcol or hx("ff2a2a")
+        dark = hx("5a0000")
+        w = 4.0 * S
         cr.save()
-        cr.rectangle(0, 0, bar_w + glow_r + 4.0 * rscale, card_h)   # room for the glow
-        cr.clip()
-        # soft, diffuse glow (the dominant look) — white core -> accent -> transparent.
-        rg = cairo.RadialGradient(cx, cy, 0, cx, cy, glow_r)
-        rg.add_color_stop_rgba(0.0, 1, 1, 1, 0.42 * a)
-        rg.add_color_stop_rgba(0.22, accent[0], accent[1], accent[2], 0.26 * a)
-        rg.add_color_stop_rgba(1.0, accent[0], accent[1], accent[2], 0.0)
-        cr.set_source(rg)
-        cr.paint()
-        # faint translucent core (not a solid block).
-        grad = cairo.LinearGradient(0, cy - ch_ / 2, 0, cy + ch_ / 2)
-        grad.add_color_stop_rgba(0.0, 1, 1, 1, 0.55 * a)
-        grad.add_color_stop_rgba(1.0, accent[0], accent[1], accent[2], 0.28 * a)
-        cr.set_source(grad)
-        _rrect_path(cr, cx - cw_ / 2, cy - ch_ / 2, cw_, ch_, cw_ / 2)
-        cr.fill()
+        clip_card(cr)
+        for i, lx in enumerate(DRIP_X):
+            p = prog(el, 2800, i * 500, infinite=True, fill=False)
+            if p is None:
+                continue                              # base style: height 0 (invisible)
+            op = kf(p, [(0, 0.0), (0.1, 0.95), (1, 0.0)], EASE_IN)
+            h = kf(p, [(0, 0.0), (0.55, 16.0), (1, 8.0)], EASE_IN) * S
+            if op <= 0.01 or h <= 0.3:
+                continue
+            top = kf(p, [(0, -2.0 * S), (1, float(card_h))], EASE_IN)
+            x = lx / 100.0 * card_w
+
+            def shape(c, ww=w, hh=h):
+                rb = min(ww / 2.0, ww * 0.6)
+                c.move_to(0, 0)
+                c.line_to(ww, 0)
+                c.line_to(ww, max(0.0, hh - hh * 0.6))
+                c.curve_to(ww, hh, 0, hh, 0, max(0.0, hh - hh * 0.6))
+                c.close_path()
+                return rb
+            cr.save()
+            cr.translate(x, top)
+            glow = soft(("drip", bc, round(h, 1)), 2.5 * S, w, h,
+                        lambda c: (shape(c), c.set_source_rgb(*bc), c.fill()))
+            paint_soft(cr, glow, 0.6 * op)
+            g = cairo.LinearGradient(0, 0, 0, h)
+            g.add_color_stop_rgba(0.0, dark[0], dark[1], dark[2], op)
+            g.add_color_stop_rgba(1.0, bc[0], bc[1], bc[2], op)
+            shape(cr)
+            cr.set_source(g)
+            cr.fill()
+            cr.restore()
         cr.restore()
 
-    def fx_glint(el, cr):
-        # CSS .glint: an 18deg-tilted bright band, 26% card-width wide, sweeping
-        # left:-35% -> 135% ONCE (glint 1.2s ease-in, .25s delay).
-        if el < 250 or el > 1450:
+    def fx_comet(el, cr):
+        # CSS .comet: 4x15 capsule at left:-1px, white(.9) -> accB(.3), box-shadow
+        # 0 0 7px accA .7, 0 0 16px accB .5, 0 0 26px accB .28; comet 2.6s ease-in-out
+        # .4s infinite both: top -18px -> 100%, opacity 0 -> .9 (14%) -> .9 (86%) -> 0.
+        p = prog(el, 2600, 400, infinite=True)
+        op = kf(p, [(0, 0.0), (0.14, 0.9), (0.86, 0.9), (1, 0.0)], EASE_IN_OUT)
+        if op <= 0.01:
             return
-        p = (el - 250) / 1200.0
-        p = p * p                                   # ease-in
-        cxp = (-0.35 + p * 1.70) * card_w           # -35% -> 135%
-        bandw = 0.26 * card_w
+        top = kf(p, [(0, -18.0 * S), (1, float(card_h))], EASE_IN_OUT)
+        w, h, r = 4.0 * S, 15.0 * S, 3.0 * S
+        x = -1.0 * S
+
+        def cap(c, col):
+            _rrect_path(c, 0, 0, w, h, r)
+            c.set_source_rgb(*col)
+            c.fill()
         cr.save()
-        _rrect_path(cr, 0, 0, card_w, card_h, disp_radius)
-        cr.clip()
-        cr.translate(cxp, card_h / 2.0)
+        clip_card(cr)
+        cr.push_group()
+        paint_soft(cr, soft(("comet", accent_b, 26), 13.0 * S, w, h, lambda c: cap(c, accent_b)), 0.28, x, top)
+        paint_soft(cr, soft(("comet", accent_b, 16), 8.0 * S, w, h, lambda c: cap(c, accent_b)), 0.5, x, top)
+        paint_soft(cr, soft(("comet", accent, 7), 3.5 * S, w, h, lambda c: cap(c, accent)), 0.7, x, top)
+        g = cairo.LinearGradient(0, top, 0, top + h)
+        g.add_color_stop_rgba(0.0, 1, 1, 1, 0.9)
+        g.add_color_stop_rgba(1.0, accent_b[0], accent_b[1], accent_b[2], 0.3)
+        _rrect_path(cr, x, top, w, h, r)
+        cr.set_source(g)
+        cr.fill()
+        cr.pop_group_to_source()
+        cr.paint_with_alpha(op)
+        cr.restore()
+
+    GLINT_T = EASE_IN
+
+    def fx_glint(el, cr):
+        # CSS .glint: top -20%, width 26%, height 140%, rotate(18deg), white .55 band,
+        # glint 1.2s ease-in .25s both: left -35% -> 135%.
+        p = prog(el, 1200, 250)
+        if p <= 0.0 or p >= 1.0:
+            return
+        left = kf(p, [(0, -0.35), (1, 1.35)], GLINT_T)
+        bw, bh = 0.26 * card_w, 1.40 * card_h
+        cr.save()
+        clip_card(cr)
+        cr.translate((left + 0.13) * card_w, 0.5 * card_h)
         cr.rotate(math.radians(18))
-        grad = cairo.LinearGradient(-bandw / 2.0, 0, bandw / 2.0, 0)
-        grad.add_color_stop_rgba(0.0, 1, 1, 1, 0.0)
-        grad.add_color_stop_rgba(0.5, 1, 1, 1, 0.55)
-        grad.add_color_stop_rgba(1.0, 1, 1, 1, 0.0)
-        cr.set_source(grad)
-        cr.rectangle(-bandw / 2.0, -card_h, bandw, card_h * 2.4)
+        g = cairo.LinearGradient(-bw / 2.0, 0, bw / 2.0, 0)
+        g.add_color_stop_rgba(0.0, 1, 1, 1, 0.0)
+        g.add_color_stop_rgba(0.5, 1, 1, 1, 0.55)
+        g.add_color_stop_rgba(1.0, 1, 1, 1, 0.0)
+        cr.rectangle(-bw / 2.0, -bh / 2.0, bw, bh)
+        cr.set_source(g)
         cr.fill()
         cr.restore()
 
     def fx_flash(el, cr):
-        # CSS .flash: a warm radial glow over the card, 0 -> peak at 14% -> 0 (0.75s).
-        if el > 750:
+        # CSS .flash: radial-gradient(circle at 50% 35%, colour .65, transparent 62%)
+        # (farthest-corner circle), flashin .75s ease-out both: opacity 0 -> 1 (14%) -> 0.
+        p = prog(el, 750)
+        op = kf(p, [(0, 0.0), (0.14, 1.0), (1, 0.0)], EASE_OUT)
+        if op <= 0.01:
             return
-        p = el / 750.0
-        a = (p / 0.14) if p < 0.14 else max(0.0, 1.0 - (p - 0.14) / 0.86)
-        a *= 0.65
+        fc = fxcol or (1.0, 224 / 255.0, 150 / 255.0)
         cx, cy = card_w * 0.5, card_h * 0.35
-        rad = math.hypot(card_w, card_h) * 0.62
-        fc = fxcol if fxcol else (1.0, 0.878, 0.588)   # fx color, else warm default
-        grad = cairo.RadialGradient(cx, cy, 0, cx, cy, rad)
-        grad.add_color_stop_rgba(0.0, fc[0], fc[1], fc[2], a)
-        grad.add_color_stop_rgba(1.0, fc[0], fc[1], fc[2], 0.0)
+        rad = 0.62 * math.hypot(card_w * 0.5, card_h * 0.65)
+        g = cairo.RadialGradient(cx, cy, 0, cx, cy, rad)
+        g.add_color_stop_rgba(0.0, fc[0], fc[1], fc[2], 0.65 * op)
+        g.add_color_stop_rgba(1.0, fc[0], fc[1], fc[2], 0.0)
         cr.save()
-        _rrect_path(cr, 0, 0, card_w, card_h, disp_radius)
-        cr.clip()
-        cr.set_source(grad)
+        clip_card(cr)
+        cr.set_source(g)
         cr.paint()
         cr.restore()
 
-    def fx_shockwave(el, cr):
-        # CSS .icwrap::after: a rounded-RECT outline around the icon (NOT a circle),
-        # scaling 1 -> 1.8 from the icon center, opacity .7 -> 0 (shock .8s, .2s delay).
-        ix, iy, isz = icon_box
-        if isz <= 0 or el < 200 or el > 1000:
+    def fx_shimmer(el, cr):
+        # Rare: .card::after 40% wide band, linear-gradient(100deg, transparent,
+        # white .18, transparent), skewX(-18deg); sweep 2.6s ease-in-out .8s infinite:
+        # left -60% -> 130% (0..60%), then rests off-card.
+        p = prog(el, 2600, 800, infinite=True, fill=False)
+        if p is None or p >= 0.6:
             return
-        p = ease_out((el - 200) / 800.0)
-        scale = 1.0 + 0.8 * p
-        a = 0.7 * (1.0 - p)
-        cx, cy = ix + isz / 2.0, iy + isz / 2.0
-        side = isz * scale
+        left = kf(p, [(0, -0.60), (0.6, 1.30)], EASE_IN_OUT)
+        bw = 0.40 * card_w
+        a = math.radians(100)
+        dx, dy = math.sin(a), -math.cos(a)
+        ln = abs(bw * dx) + abs(card_h * dy)
         cr.save()
-        _rrect_path(cr, cx - side / 2.0, cy - side / 2.0, side, side, icon_r * scale)
-        cr.set_line_width(2.0)
-        cr.set_source_rgba(accent[0], accent[1], accent[2], a)
-        cr.stroke()
+        clip_card(cr)
+        cr.translate((left + 0.20) * card_w, card_h / 2.0)
+        cr.transform(cairo.Matrix(1, 0, math.tan(math.radians(-18)), 1, 0, 0))
+        g = cairo.LinearGradient(-dx * ln / 2, -dy * ln / 2, dx * ln / 2, dy * ln / 2)
+        g.add_color_stop_rgba(0.0, 1, 1, 1, 0.0)
+        g.add_color_stop_rgba(0.5, 1, 1, 1, 0.18)
+        g.add_color_stop_rgba(1.0, 1, 1, 1, 0.0)
+        cr.rectangle(-bw / 2.0, -card_h / 2.0, bw, card_h)
+        cr.set_source(g)
+        cr.fill()
         cr.restore()
 
+    STAMP_T = _bezier(.2, 1.5, .45, 1)
+
+    def icon_scale(el):
+        # CSS icstamp .55s cubic-bezier(.2,1.5,.45,1) .08s both: scale .4 -> 1.12 (60%)
+        # -> 1. (The baked card already holds the icon, so only the >= 1 part shows.)
+        if "stamp" not in fxset:
+            return 1.0
+        p = prog(el, 550, 80)
+        return kf(p, [(0, 0.4), (0.6, 1.12), (1, 1.0)], STAMP_T)
+
     def fx_stamp(el, cr):
-        # CSS icstamp: the icon pops in (scale .4 -> 1.12 -> 1). On a baked card we
-        # can only show the overshoot bump cleanly, scaling the isolated icon sprite.
-        if icon_surf is None or el < 80 or el > 630:
+        if icon_surf is None:
+            return
+        sc = icon_scale(el)
+        if abs(sc - 1.0) < 0.003 or sc < 1.0:
             return
         ix, iy, isz = icon_box
-        p = min(1.0, (el - 80) / 550.0)
-        pop = 1.0 + 0.12 * math.sin(p * math.pi)   # 1.0 -> 1.12 -> 1.0
         cx, cy = ix + isz / 2.0, iy + isz / 2.0
         cr.save()
         cr.translate(cx, cy)
-        cr.scale(pop, pop)
+        cr.scale(sc, sc)
         cr.translate(-cx, -cy)
         cr.set_source_surface(icon_surf, ix, iy)
         cr.paint()
         cr.restore()
 
-    def fx_blooddrip(el, cr):
-        # Blood drops forming at the top edge and trickling down. Always red (blood),
-        # or the fx color if one is set.
-        bc = fxcol if fxcol else (1.0, 0.16, 0.16)
-        dark = (0.32, 0.0, 0.0)
-        xs = (0.12, 0.30, 0.50, 0.68, 0.86)
-        period = 2800.0
-        w_ = 4.0 * rscale
-        for i, fxp in enumerate(xs):
-            prog = ((el + i * 560.0) % period) / period
-            if prog < 0.1:
-                a = prog / 0.1
-            elif prog > 0.9:
-                a = max(0.0, (1.0 - prog) / 0.1)
-            else:
-                a = 0.95
-            x = fxp * card_w
-            top = -2.0 * rscale + (prog ** 1.5) * (card_h + 4.0 * rscale)  # accelerating fall
-            drop_h = (16.0 if prog < 0.55 else 9.0) * rscale
-            grad = cairo.LinearGradient(0, top, 0, top + drop_h)
-            grad.add_color_stop_rgba(0.0, dark[0], dark[1], dark[2], a)
-            grad.add_color_stop_rgba(1.0, bc[0], bc[1], bc[2], a)
-            cr.save()
-            cr.set_source(grad)
-            _rrect_path(cr, x - w_ / 2.0, top, w_, drop_h, w_ / 2.0)
-            cr.fill()
-            cr.restore()
+    SHOCK_T = EASE_OUT
 
-    # Ambient on the left accent bar --------------------------------------------
+    def fx_shockwave(el, cr):
+        # CSS .icwrap::after: the icon box, border 2px accA (inside the box), radius
+        # min(radius,8); shock .8s ease-out .2s both: opacity .7 -> 0, scale 1 -> 1.8.
+        ix, iy, isz = icon_box
+        if isz <= 0:
+            return
+        p = prog(el, 800, 200)
+        if p <= 0.0 or p >= 1.0:
+            return
+        op = kf(p, [(0, 0.7), (1, 0.0)], SHOCK_T)
+        sc = kf(p, [(0, 1.0), (1, 1.8)], SHOCK_T) * max(1.0, icon_scale(el))
+        cx, cy = ix + isz / 2.0, iy + isz / 2.0
+        cr.save()
+        cr.translate(cx, cy)
+        cr.scale(sc, sc)
+        cr.translate(-cx, -cy)
+        _rrect_path(cr, ix + S, iy + S, isz - 2 * S, isz - 2 * S, max(0.0, icon_r - S))
+        cr.set_line_width(2.0 * S)
+        cr.set_source_rgba(accent[0], accent[1], accent[2], op)
+        cr.stroke()
+        cr.restore()
+
+    # Ambient on the accent bar: each mode mirrors its CSS keyframes exactly ---------
+    def _bar_rect():
+        if acc_top:                                    # centered layout: 4px top bar
+            return 0.0, 0.0, float(card_w), 4.0 * rscale
+        return 0.0, 0.0, bar_w, float(card_h)
+
+    def _bar_bg():
+        # Card colour right beside the bar (what shows through it when it fades).
+        try:
+            nch = card_pb.get_n_channels()
+            rs = card_pb.get_rowstride()
+            px = card_pb.get_pixels()
+            _bx, _by, bw, bh = _bar_rect()
+            x = int(card_w / 2) if acc_top else int(bw + 3 * rscale)
+            y = int(bh + 3 * rscale) if acc_top else int(card_h / 2)
+            idx = y * rs + x * nch
+            return (px[idx] / 255.0, px[idx + 1] / 255.0, px[idx + 2] / 255.0)
+        except Exception:  # noqa: BLE001  pylint: disable=broad-except
+            return (0.04, 0.04, 0.05)
+
+    bar_bg_col = _bar_bg()
+
+    def _hue_rotate(c, deg):
+        # The CSS filter hue-rotate() matrix (not an HSV rotation).
+        a = math.radians(deg)
+        co, si = math.cos(a), math.sin(a)
+        r, g, b = c
+        rr = ((0.213 + 0.787 * co - 0.213 * si) * r + (0.715 - 0.715 * co - 0.715 * si) * g
+              + (0.072 - 0.072 * co + 0.928 * si) * b)
+        gg = ((0.213 - 0.213 * co + 0.143 * si) * r + (0.715 + 0.285 * co + 0.140 * si) * g
+              + (0.072 - 0.072 * co - 0.283 * si) * b)
+        bb = ((0.213 - 0.213 * co - 0.787 * si) * r + (0.715 - 0.715 * co + 0.715 * si) * g
+              + (0.072 + 0.928 * co + 0.072 * si) * b)
+        return tuple(max(0.0, min(1.0, v)) for v in (rr, gg, bb))
+
+    def _paint_bar(cr, src):
+        bx, by, bw, bh = _bar_rect()
+        cr.save()
+        cr.rectangle(bx, by, bw, bh)
+        cr.clip()
+        cr.set_source(src)
+        cr.mask_surface(card0, 0, 0)                   # keep the card's rounded corners
+        cr.restore()
+
     def fx_bar(el, cr, mode):
-        ac0, ac1, ac2 = accent                                # exact theme accent
+        _bx, _by, bw, bh = _bar_rect()
+        along = bw if acc_top else bh                  # bar length
         if mode == "pulse":
-            # CSS amb_pulse: box-shadow glow 5px -> 18px pulsing OUTWARD from the bar.
-            t = 0.5 + 0.5 * math.sin(el / 1000.0 * (2 * math.pi / 1.9))
-            glow_w = (5.0 + 13.0 * t) * rscale
-            a = 0.25 + 0.4 * t
-            span = bar_w + glow_w
+            # CSS amb_pulse: box-shadow 0 0 5px -> 18px (1.9s) in the THEME GLOW colour,
+            # painted OUTSIDE the bar (never over it); the card clips it, so it shows as
+            # a soft glow spilling onto the card beside the bar.
+            t = 0.5 - 0.5 * math.cos(el / 1900.0 * 2 * math.pi)   # 5px at 0%, 18px at 50%
+            blur = (5.0 + 13.0 * t) * rscale
+            g0, g1, g2 = glow_col
+            peak = glow_a * 0.5                        # a blurred shadow is ~50% at the edge
             cr.save()
-            cr.rectangle(0, 0, span, card_h)
+            if acc_top:
+                cr.rectangle(0, bh, card_w, blur)
+                grad = cairo.LinearGradient(0, bh, 0, bh + blur)
+            else:
+                cr.rectangle(bw, 0, blur, card_h)
+                grad = cairo.LinearGradient(bw, 0, bw + blur, 0)
             cr.clip()
-            grad = cairo.LinearGradient(0, 0, span, 0)
-            grad.add_color_stop_rgba(0.0, ac0, ac1, ac2, a)
-            grad.add_color_stop_rgba(min(0.99, bar_w / span), ac0, ac1, ac2, a * 0.85)
-            grad.add_color_stop_rgba(1.0, ac0, ac1, ac2, 0.0)
+            grad.add_color_stop_rgba(0.0, g0, g1, g2, peak)
+            grad.add_color_stop_rgba(0.45, g0, g1, g2, peak * 0.37)
+            grad.add_color_stop_rgba(1.0, g0, g1, g2, 0.0)
             cr.set_source(grad)
             cr.mask_surface(card0, 0, 0)
             cr.restore()
             return
-        cr.save()
-        cr.rectangle(0, 0, bar_w, card_h)
-        cr.clip()
-        if mode == "hue":                                      # amb_hue 4s
-            rr, gg, bb = _hsv((el * 0.09) % 360.0, 0.6, 1.0)
-            cr.set_source_rgba(rr, gg, bb, 0.42)
-            cr.mask_surface(card0, 0, 0)
-        elif mode == "flow":                                   # amb_flow 2.6s
-            cy = (el / 2600.0 % 1.0) * (card_h + 44) - 22
-            grad = cairo.LinearGradient(0, cy - 24, 0, cy + 24)
-            grad.add_color_stop_rgba(0.0, ac0, ac1, ac2, 0.0)
-            grad.add_color_stop_rgba(0.5, 1, 1, 1, 0.6)
-            grad.add_color_stop_rgba(1.0, ac0, ac1, ac2, 0.0)
-            cr.set_source(grad)
-            cr.mask_surface(card0, 0, 0)
-        else:                                                  # amb_breathe 2.8s
-            a = 0.22 + 0.33 * (0.5 + 0.5 * math.sin(el / 1000.0 * (2 * math.pi / 2.8)))
-            cr.set_source_rgba(ac0, ac1, ac2, a)
-            cr.mask_surface(card0, 0, 0)
-        cr.restore()
+        if mode == "flow":
+            # CSS amb_flow: the bar's own gradient A->B->A (background-size 300%) scrolls
+            # along it, 6x the bar length every 2.6s (2 full colour periods).
+            period = 3.0 * along
+            off = ((el / 2600.0) * 6.0 * along) % period
+            if acc_top:
+                grad = cairo.LinearGradient(off - period, 0, off, 0)
+            else:
+                grad = cairo.LinearGradient(0, off - period, 0, off)
+            grad.set_extend(cairo.EXTEND_REPEAT)
+            grad.add_color_stop_rgb(0.0, *accent)
+            grad.add_color_stop_rgb(0.5, *accent_b)
+            grad.add_color_stop_rgb(1.0, *accent)
+            _paint_bar(cr, grad)
+            return
+        if mode == "hue":
+            # CSS amb_hue: hue-rotate(0 -> 360deg) of the bar's A->B gradient over 4s.
+            deg = (el / 4000.0 * 360.0) % 360.0
+            c0, c1 = _hue_rotate(accent, deg), _hue_rotate(accent_b, deg)
+            grad = (cairo.LinearGradient(0, 0, along, 0) if acc_top
+                    else cairo.LinearGradient(0, 0, 0, along))
+            grad.add_color_stop_rgb(0.0, *c0)
+            grad.add_color_stop_rgb(1.0, *c1)
+            _paint_bar(cr, grad)
+            return
+        # breathe -- CSS amb_breathe: the bar's opacity .7 <-> 1 (2.8s), so the card shows
+        # through it: blend the card colour beside the bar back over it by (1 - opacity).
+        op = 0.85 - 0.15 * math.cos(el / 2800.0 * 2 * math.pi)  # .7 at 0%, 1 at 50%
+        cover = 1.0 - op
+        if cover > 0.005:
+            _paint_bar(cr, cairo.SolidPattern(bar_bg_col[0], bar_bg_col[1], bar_bg_col[2], cover))
 
-    def on_draw(_widget, cr):
-        cr.set_operator(1)  # SOURCE -> clear transparent
-        cr.set_source_rgba(0, 0, 0, 0)
-        cr.paint()
-        el = (time.monotonic() - anim["start"]) * 1000.0
-        ex = exit_phase(el)
-        if ex is not None:
-            alpha, dy = ex
-            dx, sx, sy = 0.0, 1.0, 1.0
-        else:
-            alpha, dx, dy, sx, sy = enter_transform(el)
-        if alpha <= 0:
-            return False
-        cr.set_operator(2)  # OVER
-        cr.save()
-        cr.translate(pos_x + dx, pos_y + dy)
-        if sx != 1.0 or sy != 1.0:                       # scale around the card center
-            lcx, lcy = card_w / 2.0, card_h / 2.0
-            cr.translate(lcx, lcy)
-            cr.scale(sx, sy)
-            cr.translate(-lcx, -lcy)
-        grouped = card_opacity < 0.999                   # fade card + effects together
-        if grouped:
-            cr.push_group()
+    def draw_card(cr, el):
+        """Card + every effect at time el, in the CSS paint order."""
+        fx_card_glow(el, cr)                          # .card box-shadow (outside)
         cr.set_source_surface(card0, 0, 0)
-        cr.paint_with_alpha(alpha)
-        # glow-in entrance also brightens the card (CSS brightness 1.8 -> 1).
-        if ex is None and anim_id == "glow-in" and enter_ms and el < enter_ms:
-            wash = (1.0 - ease_out(el / enter_ms)) * 0.32
-            if wash > 0.01:
-                cr.save()
-                cr.set_source_rgba(1, 1, 1, wash)
-                cr.mask_surface(card0, 0, 0)
-                cr.restore()
-        # Entrance one-shots (play during/just after the entrance).
-        if alpha > 0.35:
-            if "stamp" in fxset:
-                fx_stamp(el, cr)
-            if "flash" in fxset:
-                fx_flash(el, cr)
-            if "shockwave" in fxset:
-                fx_shockwave(el, cr)
-            if "glint" in fxset:
-                fx_glint(el, cr)
-        # Continuous effects, once the entrance has settled.
-        if alpha > 0.8 and el < hold_end:
-            if "edgerainbow" in fxset:
-                fx_edgerainbow(el, cr)
-            elif "edgepulse" in fxset:
-                fx_edgepulse(el, cr)
-            elif "glowline" in fxset:
-                fx_glowline(el, cr)
-            elif "border" in fxset:
-                fx_border(el, cr)
-            if "confetti" in fxset:
-                fx_confetti(el, cr)
-            elif "stars" in fxset:
-                fx_particles(el, cr, star_pos, 2 * math.pi / 1.6, "star")
-            elif "sparkles" in fxset:
-                fx_particles(el, cr, spark_pos, 2 * math.pi / 1.7, "dot")
-            elif "bloodrain" in fxset:
-                fx_bloodrain(el, cr)
-            if "comet" in fxset:
-                fx_comet(el, cr)
-            if "blooddrip" in fxset:
-                fx_blooddrip(el, cr)
+        cr.paint()
+        if "accentbar" in fxset:                      # .card::before (z auto)
             if ambient in ("flow", "flow-pulse"):
                 fx_bar(el, cr, "flow")
             if ambient in ("pulse", "flow-pulse"):
                 fx_bar(el, cr, "pulse")
+                if icon_surf is not None:             # the icon paints above the glow
+                    ix, iy, _isz = icon_box
+                    cr.set_source_surface(icon_surf, ix, iy)
+                    cr.paint()
             if ambient == "hue":
                 fx_bar(el, cr, "hue")
             if ambient == "breathe":
                 fx_bar(el, cr, "breathe")
-        if grouped:
-            cr.pop_group_to_source()
-            cr.paint_with_alpha(card_opacity)
-        cr.restore()
+        if "stamp" in fxset:                          # .icwrap (z auto)
+            fx_stamp(el, cr)
+        if "shockwave" in fxset:
+            fx_shockwave(el, cr)
+        if "border" in fxset:                         # .brd (z 2)
+            fx_border(el, cr)
+        if "comet" in fxset and not acc_top:          # z 3, DOM order
+            fx_comet(el, cr)
+        if "glint" in fxset:
+            fx_glint(el, cr)
+        if "blooddrip" in fxset:
+            fx_blooddrip(el, cr)
+        if rare:                                      # .card::after (z 3, last child)
+            fx_shimmer(el, cr)
+        if "flash" in fxset:                          # z 4, DOM order
+            fx_flash(el, cr)
+        if "sparkles" in fxset:
+            fx_sparkles(el, cr)
+        elif "stars" in fxset:
+            fx_stars(el, cr)
+        elif "confetti" in fxset:
+            fx_confetti(el, cr)
+        elif "bloodrain" in fxset:
+            fx_bloodrain(el, cr)
+        if "edgerainbow" in fxset:                    # .edgefx (outside the card, z 5)
+            fx_edgerainbow(el, cr)
+        elif "edgepulse" in fxset:
+            fx_edgepulse(el, cr)
+        elif "glowline" in fxset:
+            fx_glowline(el, cr)
+
+    def on_draw(_widget, cr):
+        cr.set_operator(cairo.OPERATOR_SOURCE)        # clear to transparent
+        cr.set_source_rgba(0, 0, 0, 0)
+        cr.paint()
+        render_at(cr, (time.monotonic() - anim["start"]) * 1000.0, pos_x, pos_y)
         return False
 
-    def _dump_frame(path, t, oneshots):
-        """Debug: composite the card + effects at time t into a PNG for inspection."""
-        try:
-            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32, int(card_w), int(card_h))
+    GROUP_M = 110.0                                   # room for outer glows
+
+    def render_at(cr, el, ox, oy):
+        """Draw the card + every effect at time el (ms), card top-left at (ox, oy).
+        Shared by the live window and the --dump-dir harness, so a dumped frame is
+        exactly what shows over the game. Card and effects form ONE group that takes
+        the entrance/exit transform + opacity, like the CSS .card subtree."""
+        op, tx, ty, sc, sy, br = card_state(el)
+        if op <= 0.0:
+            return
+        cr.set_operator(cairo.OPERATOR_OVER)
+        cr.save()
+        cr.translate(ox + tx, oy + ty)
+        if sc != 1.0 or sy != 1.0:                    # scale around the card centre
+            lcx, lcy = card_w / 2.0, card_h / 2.0
+            cr.translate(lcx, lcy)
+            cr.scale(sc, sc * sy)
+            cr.translate(-lcx, -lcy)
+        cr.rectangle(-GROUP_M, -GROUP_M, card_w + 2 * GROUP_M, card_h + 2 * GROUP_M)
+        cr.clip()
+        cr.push_group()
+        draw_card(cr, el)
+        grp = cr.pop_group()
+        cr.set_source(grp)
+        cr.paint_with_alpha(op * card_opacity)
+        if br > 0.002:                                # glow-in: CSS brightness(1 + br)
+            cr.set_operator(cairo.OPERATOR_ADD)
+            cr.set_source(grp)
+            cr.paint_with_alpha(min(1.0, op * card_opacity * br))
+            cr.set_operator(cairo.OPERATOR_OVER)
+        cr.restore()
+
+    # Test harness: render frames at the given times through the SAME render_at the
+    # live window uses, write them as PNGs and exit without ever showing a window.
+    if args.dump_dir:
+        margin_px = 110
+        times = [float(t) for t in (args.dump_times or "300,800,1500").split(",") if t.strip()]
+        os.makedirs(args.dump_dir, exist_ok=True)
+        for t in times:
+            surf = cairo.ImageSurface(cairo.FORMAT_ARGB32,
+                                      int(card_w + 2 * margin_px), int(card_h + 2 * margin_px))
             dc = cairo.Context(surf)
-            dc.set_source_surface(card0, 0, 0)
-            dc.paint()
-            if oneshots and anim_id == "glow-in" and enter_ms and t < enter_ms:
-                wash = (1.0 - ease_out(t / enter_ms)) * 0.32
-                if wash > 0.01:
-                    dc.save()
-                    dc.set_source_rgba(1, 1, 1, wash)
-                    dc.mask_surface(card0, 0, 0)
-                    dc.restore()
-            if "edgerainbow" in fxset:
-                fx_edgerainbow(t, dc)
-            elif "edgepulse" in fxset:
-                fx_edgepulse(t, dc)
-            elif "glowline" in fxset:
-                fx_glowline(t, dc)
-            elif "border" in fxset:
-                fx_border(t, dc)
-            if "confetti" in fxset:
-                fx_confetti(t, dc)
-            elif "stars" in fxset:
-                fx_particles(t, dc, star_pos, 2 * math.pi / 1.6, "star")
-            elif "sparkles" in fxset:
-                fx_particles(t, dc, spark_pos, 2 * math.pi / 1.7, "dot")
-            elif "bloodrain" in fxset:
-                fx_bloodrain(t, dc)
-            if "comet" in fxset:
-                fx_comet(t, dc)
-            if "blooddrip" in fxset:
-                fx_blooddrip(t, dc)
-            if ambient in ("flow", "flow-pulse"):
-                fx_bar(t, dc, "flow")
-            if ambient in ("pulse", "flow-pulse"):
-                fx_bar(t, dc, "pulse")
-            if ambient == "hue":
-                fx_bar(t, dc, "hue")
-            if ambient == "breathe":
-                fx_bar(t, dc, "breathe")
-            if oneshots:
-                if "stamp" in fxset:
-                    fx_stamp(t, dc)
-                if "flash" in fxset:
-                    fx_flash(t, dc)
-                if "shockwave" in fxset:
-                    fx_shockwave(t, dc)
-                if "glint" in fxset:
-                    fx_glint(t, dc)
-            surf.write_to_png(path)
-        except Exception:  # noqa: BLE001  pylint: disable=broad-except
-            pass
-
-    _dump_frame("/tmp/ktt_frame.png", 1500.0, False)   # hold phase
-    _dump_frame("/tmp/ktt_enter.png", 330.0, True)      # entrance one-shots
-
-    try:  # debug: glowline at several positions (verify smooth seam wrap + bloom)
-        if "glowline" in fxset:
-            times = (100.0, 900.0, 1700.0, 2050.0, 2250.0)
-            strip = cairo.ImageSurface(cairo.FORMAT_ARGB32,
-                                       int(card_w), int(card_h) * len(times) + 10 * (len(times) - 1))
-            sc = cairo.Context(strip)
-            for i, t in enumerate(times):
-                sc.save()
-                sc.translate(0, i * (card_h + 10))
-                sc.set_source_surface(card0, 0, 0)
-                sc.paint()
-                fx_glowline(t, sc)
-                sc.restore()
-            strip.write_to_png("/tmp/ktt_gl.png")
-    except Exception:  # noqa: BLE001  pylint: disable=broad-except
-        pass
+            render_at(dc, t, margin_px, margin_px)
+            surf.write_to_png(os.path.join(args.dump_dir, "f_%05d.png" % int(t)))
+        log("dumped %d frames to %s" % (len(times), args.dump_dir))
+        return
 
     win.connect("draw", on_draw)
     win.connect("destroy", Gtk.main_quit)

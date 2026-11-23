@@ -95,6 +95,40 @@ export const THEMES: Theme[] = [
     iconFrame: 'inset 0 0 0 2px #ff7a4d,0 0 12px rgba(255,80,60,0.45)', font: SANS,
   },
   {
+    // Signature themes (used by the matching presets, so the Theme picker shows
+    // "Vampyr" etc. instead of the generic base theme).
+    id: 'vampyr', name: 'Vampyr',
+    cardBg: 'linear-gradient(135deg,rgba(46,0,4,0.92),rgba(14,0,2,0.80))', blur: 18,
+    border: 'rgba(255,40,40,0.30)', radius: 2,
+    accent: ['#ff2626', '#c40000'], eyebrow: '#ff3b3b', nameColor: '#fff',
+    rarityColor: '#e8b0b0', pctColor: '#ff3b3b', glow: 'rgba(255,0,0,0.45)', shimmer: false,
+    iconFrame: 'inset 0 0 0 2px #e00000,0 0 12px rgba(255,0,0,0.55)', font: SANS,
+  },
+  {
+    id: 'halloween', name: 'Halloween',
+    cardBg: 'linear-gradient(135deg,rgba(30,10,32,0.92),rgba(10,4,12,0.80))', blur: 18,
+    border: 'rgba(255,140,30,0.28)', radius: 6,
+    accent: ['#ffb347', '#ff6a00'], eyebrow: '#ffa53a', nameColor: '#fff4e6',
+    rarityColor: '#d9c2e8', pctColor: '#ffb347', glow: 'rgba(255,120,0,0.40)', shimmer: false,
+    iconFrame: 'inset 0 0 0 2px #ff7a00,0 0 12px rgba(255,120,0,0.5)', font: SANS,
+  },
+  {
+    id: 'ghost', name: 'Ghost',
+    cardBg: 'linear-gradient(135deg,rgba(40,46,58,0.86),rgba(18,20,28,0.70))', blur: 22,
+    border: 'rgba(230,240,255,0.30)', radius: 12,
+    accent: ['#ffffff', '#bfd4ff'], eyebrow: '#e8f0ff', nameColor: '#fff',
+    rarityColor: '#c3cbd9', pctColor: '#ffffff', glow: 'rgba(220,235,255,0.35)', shimmer: true,
+    iconFrame: 'inset 0 0 0 2px rgba(255,255,255,0.7),0 0 14px rgba(220,235,255,0.5)', font: SANS,
+  },
+  {
+    id: 'toxic', name: 'Toxic',
+    cardBg: 'linear-gradient(135deg,rgba(10,26,8,0.92),rgba(3,10,3,0.80))', blur: 18,
+    border: 'rgba(140,255,60,0.28)', radius: 4,
+    accent: ['#c6ff3d', '#39d914'], eyebrow: '#b6ff4d', nameColor: '#f4ffe6',
+    rarityColor: '#a8d68f', pctColor: '#c6ff3d', glow: 'rgba(120,255,40,0.40)', shimmer: false,
+    iconFrame: 'inset 0 0 0 2px #5dff1f,0 0 12px rgba(100,255,40,0.5)', font: SANS,
+  },
+  {
     id: 'frost', name: 'Frostbite',
     cardBg: 'linear-gradient(135deg,rgba(8,16,24,0.86),rgba(2,8,14,0.68))', blur: 22,
     border: 'rgba(190,230,255,0.18)', radius: 8,
@@ -172,7 +206,7 @@ export const ACCENTS: { id: string; name: string; colors: [string, string] }[] =
   { id: 'blue', name: 'Blue', colors: ['#7db8ff', '#2a6cff'] },
   { id: 'cyan', name: 'Cyan', colors: ['#9cffff', '#18c0c0'] },
   { id: 'green', name: 'Green', colors: ['#9cff9c', '#18c04a'] },
-  { id: 'red', name: 'Red', colors: ['#ff9c9c', '#ff2a2a'] },
+  { id: 'red', name: 'Red', colors: ['#ff2626', '#c40000'] }, // vivid blood red (was a pale pink #ff9c9c)
   { id: 'purple', name: 'Purple', colors: ['#c89cff', '#7a3aff'] },
   { id: 'pink', name: 'Pink', colors: ['#ff9cff', '#ff4ad0'] },
   { id: 'white', name: 'White / Silver', colors: ['#ffffff', '#b9bec7'] },
@@ -322,6 +356,10 @@ export function defaultAmbient(id: string): string {
     case 'kitsune-gold': return 'pulse';
     case 'royal': return 'flow-pulse';
     case 'crimson': return 'pulse';
+    case 'vampyr': return 'pulse';
+    case 'halloween': return 'flow-pulse';
+    case 'ghost': return 'breathe';
+    case 'toxic': return 'pulse';
     case 'frost': return 'breathe';
     case 'emerald': return 'flow';
     case 'kitsune-glass': return 'flow';

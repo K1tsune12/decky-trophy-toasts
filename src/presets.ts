@@ -58,23 +58,23 @@ const CURATED: Preset[] = [
   },
   {
     id: 'vampyr', name: 'Vampyr', builtin: true,
-    common: tier('crimson', 'fade', 'pulse', ['accentbar', 'stamp', 'comet', 'edgepulse'], 'red', 'cinzel', 'red'),
-    rare: tier('crimson', 'glow-in', 'pulse', ['accentbar', 'stamp', 'shockwave', 'comet', 'glint', 'flash', 'glowline', 'stars'], 'red', 'cinzel', 'red'),
+    common: tier('vampyr', 'fade', 'pulse', ['accentbar', 'stamp', 'comet', 'edgepulse'], '', 'cinzel', 'red'),
+    rare: tier('vampyr', 'glow-in', 'pulse', ['accentbar', 'stamp', 'shockwave', 'comet', 'glint', 'flash', 'glowline', 'stars'], '', 'cinzel', 'red'),
   },
   {
     id: 'halloween', name: 'Halloween', builtin: true,
-    common: tier('crimson', 'bounce', 'pulse', ['accentbar', 'stamp', 'comet', 'blooddrip'], 'amber', 'cinzel', 'amber'),
-    rare: tier('crimson', 'glow-in', 'flow-pulse', ['accentbar', 'stamp', 'shockwave', 'comet', 'flash', 'confetti', 'edgepulse'], 'amber', 'cinzel', 'amber'),
+    common: tier('halloween', 'bounce', 'pulse', ['accentbar', 'stamp', 'comet', 'blooddrip'], '', 'cinzel', 'amber'),
+    rare: tier('halloween', 'glow-in', 'flow-pulse', ['accentbar', 'stamp', 'shockwave', 'comet', 'flash', 'confetti', 'edgepulse'], '', 'cinzel', 'amber'),
   },
   {
     id: 'ghost', name: 'Ghost', builtin: true,
-    common: tier('kitsune-glass', 'fade', 'breathe', ['accentbar', 'stamp', 'glint'], 'white', '', 'white'),
-    rare: tier('frost', 'glow-in', 'breathe', ['accentbar', 'stamp', 'glint', 'sparkles', 'edgepulse'], 'white', '', 'white'),
+    common: tier('ghost', 'fade', 'breathe', ['accentbar', 'stamp', 'glint'], '', '', 'white'),
+    rare: tier('ghost', 'glow-in', 'breathe', ['accentbar', 'stamp', 'glint', 'sparkles', 'edgepulse'], '', '', 'white'),
   },
   {
     id: 'toxic', name: 'Toxic', builtin: true,
-    common: tier('emerald', 'pop', 'pulse', ['accentbar', 'stamp', 'comet', 'sparkles'], 'green', '', 'green'),
-    rare: tier('emerald', 'glow-in', 'flow-pulse', ['accentbar', 'stamp', 'shockwave', 'glint', 'flash', 'sparkles', 'glowline'], 'green', '', 'green'),
+    common: tier('toxic', 'pop', 'pulse', ['accentbar', 'stamp', 'comet', 'sparkles'], '', '', 'green'),
+    rare: tier('toxic', 'glow-in', 'flow-pulse', ['accentbar', 'stamp', 'shockwave', 'glint', 'flash', 'sparkles', 'glowline'], '', '', 'green'),
   },
   {
     id: 'frostbite', name: 'Frostbite', builtin: true,
@@ -90,13 +90,19 @@ function themeFont(id: string): string {
     case 'retro': return 'press';
     case 'royal': return 'cinzel';
     case 'emerald': return 'cinzel';
+    case 'vampyr': return 'cinzel';
+    case 'halloween': return 'cinzel';
     default: return '';
   }
 }
 
 /** One preset per theme, generated from its sensible defaults. */
+// Themes that already have a hand-tuned preset of the same name (skip the generated
+// duplicate so the list doesn't show two "Vampyr" / "Frostbite" entries).
+const SIGNATURE_THEMES = new Set(['vampyr', 'halloween', 'ghost', 'toxic', 'frost']);
+
 export function themePresets(): Preset[] {
-  return THEMES.map((th) => ({
+  return THEMES.filter((th) => !SIGNATURE_THEMES.has(th.id)).map((th) => ({
     id: `theme:${th.id}`,
     name: th.name,
     builtin: true,
