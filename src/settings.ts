@@ -179,6 +179,14 @@ export function getSettings(): AchSettings {
   return cache;
 }
 
+/** Replace everything with a restored backup (see offline.ts) and persist it. */
+export function replaceSettings(raw: Partial<AchSettings>): AchSettings {
+  const next = hydrate(raw || {});
+  cache = next;
+  persist(next);
+  return next;
+}
+
 export function saveSettings(patch: Partial<AchSettings>): AchSettings {
   const next = { ...getSettings(), ...patch };
   cache = next;

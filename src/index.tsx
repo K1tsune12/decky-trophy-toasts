@@ -14,6 +14,7 @@ import { FaCog, FaTrophy } from 'react-icons/fa';
 
 import { AchievementWatcher } from './achievements';
 import { initLanguage, t, useLanguage } from './i18n';
+import { initSettingsSync, stopSettingsSync } from './offline';
 import { runtime } from './runtime';
 import { AchSettings, getSettings, saveSettings } from './settings';
 import { SoundPlayer } from './sound';
@@ -76,6 +77,7 @@ function SettingsPanel() {
 
 export default definePlugin(() => {
   void initLanguage();
+  void initSettingsSync();   // disk backup / restore of the settings
   toast = new ToastWindow();
   sound = new SoundPlayer();
   sound.preloadEnabled();
@@ -109,6 +111,7 @@ export default definePlugin(() => {
     onDismount() {
       try { routerHook.removeRoute(STUDIO_ROUTE); } catch { /* ignore */ }
       watcher?.deinit();
+      stopSettingsSync();
       toast?.deinit();
       sound?.deinit();
       runtime.sound = undefined;

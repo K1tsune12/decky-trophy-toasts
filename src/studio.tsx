@@ -10,6 +10,7 @@ import { FaArrowLeft, FaVolumeMute, FaVolumeUp } from 'react-icons/fa';
 import { Dropdown, LanguageSection, LookEditor, SoundSlotControls, useBuiltinSounds } from './components';
 import { t, tr, useLanguage } from './i18n';
 import { Preset, allPresets, buildOpts, presetPatchTier, presetsForTier, tierLook } from './presets';
+import { ensureFont } from './offline';
 import { runtime } from './runtime';
 import { AchSettings, deleteCustomPreset, getSettings, saveMasterPreset, saveSettings, saveTierPreset, setDefaultPreset, setGamePreset } from './settings';
 import { LAYOUTS, POSITIONS, getTheme, resolveAccent } from './themes';
@@ -97,6 +98,9 @@ export function TrophyStudio() {
   }, []);
 
   const bump = () => setNonce((n) => n + 1);
+  // Bundled display fonts load from the plugin on demand; replay once one arrives.
+  const fontId = (rareTier ? s.fontRare : s.fontCommon) || '';
+  useEffect(() => { let on = true; void ensureFont(fontId).then(() => { if (on) setNonce((n) => n + 1); }); return () => { on = false; }; }, [fontId]);
   const update = (patch: Partial<AchSettings>) => setS(saveSettings(patch));
 
   // Only VISUAL settings affect the preview — key the memo on just those so that

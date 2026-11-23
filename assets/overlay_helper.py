@@ -117,8 +117,6 @@ def parse_args():
                             "center"])
     p.add_argument("--margin", type=int, default=28)
     p.add_argument("--anim", default="slide", choices=["slide", "fade", "none"])
-    p.add_argument("--count", type=int, default=1, help="frames in the vertical sprite sheet")
-    p.add_argument("--fps", type=int, default=12, help="flipbook playback rate")
     p.add_argument("--dump-dir", default="", help="test harness: write frames here and exit")
     p.add_argument("--dump-times", default="", help="comma-separated ms for --dump-dir")
     return p.parse_args()
@@ -1318,8 +1316,15 @@ def main():
     except Exception:  # noqa: BLE001  pylint: disable=broad-except
         pass
 
+    # Only the card's region changes between frames (card + outer glow + the room the
+    # entrance/exit slides through), so invalidate just that instead of the whole
+    # full-screen window: far fewer pixels to clear and repaint ~30x a second.
+    pad_px = int(GROUP_M + 80 * S)
+    dirty = (max(0, int(pos_x - pad_px)), max(0, int(pos_y - pad_px)),
+             int(card_w + 2 * pad_px), int(card_h + 2 * pad_px))
+
     def redraw():
-        win.queue_draw()
+        win.queue_draw_area(*dirty)
         return True
 
     def finish():

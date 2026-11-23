@@ -12,6 +12,7 @@
 
 import { call } from '@decky/api';
 
+import { ensureFont, iconDataUri } from './offline';
 import { defaultAmbient, defaultFx, getFont, getTheme, resolveAccent, resolveFontStack, resolveFxColor } from './themes';
 import { ToastData, ToastOptions, renderCaptureParts } from './toastWindow';
 
@@ -107,71 +108,6 @@ const MAX_FRACTION = 0.5;
 
 let rendering = false;         // guard: renders are heavy; never run two at once
 
-async function blobToDataUri(blob: Blob): Promise<string> {
-  return await new Promise<string>((resolve, reject) => {
-    const fr = new FileReader();
-    fr.onload = () => resolve(fr.result as string);
-    fr.onerror = reject;
-    fr.readAsDataURL(blob);
-  });
-}
-
-async function iconToDataUri(url: string): Promise<string | undefined> {
-  try {
-    const res = await fetch(url);
-    if (!res.ok) return undefined;
-    const blob = await res.blob();
-    return blob.size ? await blobToDataUri(blob) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/** Google-Fonts @import -> self-contained @font-face with the files inlined. The
- *  isolated SVG <img> render can't load fonts over the network, so the font files
- *  MUST be inlined as data: URIs or the text falls back to a system font. */
-async function embedFontCss(fontImp: string): Promise<string> {
-  const m = /url\(['"]?([^'")]+)['"]?\)/.exec(fontImp || '');
-  if (!m) return '';
-  const dbg: any = { url: m[1], ok: false };
-  try {
-    const cssRes = await fetch(m[1]);
-    if (!cssRes.ok) { dbg.cssStatus = cssRes.status; (window as any).__kttFont = dbg; return ''; }
-    let css = await cssRes.text();
-    const urls = Array.from(new Set(
-      Array.from(css.matchAll(/url\((https:\/\/[^)]+)\)/g)).map((x) => x[1]),
-    ));
-    dbg.files = urls.length;
-    let inlined = 0;
-    for (const u of urls) {
-      try {
-        const fr = await fetch(u);
-        if (!fr.ok) continue;
-        css = css.split(u).join(await blobToDataUri(await fr.blob()));
-        inlined += 1;
-      } catch { /* leave as-is */ }
-    }
-    // Single-weight fonts (e.g. "Press Start 2P" = 400 only) otherwise render as a
-    // fallback in the isolated SVG when the card asks for 700/800: no @font-face
-    // matches that weight. Widen a lone weight to the full range so it always matches.
-    const weights = new Set(
-      Array.from(css.matchAll(/font-weight:\s*(\d+)/g)).map((x) => x[1]),
-    );
-    if (weights.size === 1) {
-      css = css.replace(/font-weight:\s*\d+/g, 'font-weight:100 900');
-    }
-    dbg.inlined = inlined;
-    dbg.ok = inlined > 0;
-    dbg.weights = Array.from(weights);
-    (window as any).__kttFont = dbg;
-    return css;
-  } catch (e) {
-    dbg.err = String(e);
-    (window as any).__kttFont = dbg;
-    return '';
-  }
-}
-
 function svgToImage(svg: string): Promise<HTMLImageElement> {
   const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
   return new Promise((resolve, reject) => {
@@ -199,10 +135,14 @@ async function renderCard(data: ToastData, opts: ToastOptions): Promise<Card | n
 }
 
 async function renderCardInner(data: ToastData, opts: ToastOptions): Promise<Card | null> {
+  // Icon + font come from the plugin's own caches/files (memory -> disk -> network),
+  // so the card is complete offline. Both in parallel.
   let d = data;
-  if (data.icon && !/^data:/.test(data.icon)) {
-    d = { ...data, icon: await iconToDataUri(data.icon) };
-  }
+  const [icon] = await Promise.all([
+    data.icon ? iconDataUri(data.icon) : Promise.resolve(undefined),
+    ensureFont(opts.font),
+  ]);
+  if (data.icon) d = { ...data, icon };
 
   const { fontImp, style, body } = renderCaptureParts(d, opts); // opaque + static
 
@@ -261,11 +201,10 @@ async function renderCardInner(data: ToastData, opts: ToastOptions): Promise<Car
     card.style.height = `${h}px`;
     cardwrap.style.width = `${w}px`;
 
-    const fontCss = await embedFontCss(fontImp);
     const inner = new XMLSerializer().serializeToString(cardwrap);
-    // Inlined font first (reliable in the isolated SVG); keep the raw @import as a
-    // last-resort fallback in case inlining failed.
-    const fontBlock = fontCss || fontImp;
+    // fontImp is already self-contained (@font-face with the bundled files inlined),
+    // which is what the isolated SVG <img> needs — it can't load anything external.
+    const fontBlock = fontImp;
     // The font-family lives on `.wrap` in buildParts, but we serialize `.cardwrap`
     // (its child) — so set the family on the SVG root here or the chosen font never
     // reaches the text. Single-quote the family names to stay valid in the attr.

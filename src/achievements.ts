@@ -2,12 +2,14 @@
 // + sound. Suppresses Steam's native achievement toast and sound so only ours
 // shows, and tells Decky Sound Toasts to skip achievements while we run.
 //
-// Rarity: Steam's client `flAchieved` is unreliable (0 when global stats aren't
-// cached), so we use Steam's public Web API via the Python backend
-// (get_global_achievement_pct, keyed by achievement apiname == strID). We
-// pre-warm that per app on game launch so the toast shows with no network wait.
+// Rarity (global unlock %), keyed by achievement apiname (== strID), comes from the
+// first source that has it: Steam's public Web API (fetched from the frontend with
+// a short deadline), our on-disk cache of it, then the Steam client's own cached
+// value. It is pre-warmed per app on game launch — together with the achievement
+// icons — so an unlock shows instantly and complete even when the Deck is offline.
 
 import { t } from './i18n';
+import { ensureFont, fetchWithTimeout, prewarmIcons, rarityFromDisk, rarityToDisk } from './offline';
 import { enqueueOverlay, overlayDebug, renderCardDebug } from './overlay';
 import { buildOpts, resolveLook } from './presets';
 import { AchSettings, getSettings } from './settings';
@@ -51,6 +53,8 @@ export class AchievementWatcher {
   private restoreToast?: () => void;
   private restoreSound?: () => void;
   private pctCache = new Map<string, Record<string, number>>();
+  private pctJobs = new Map<string, Promise<Record<string, number>>>();
+  private netDownUntil = 0;   // after a failed request, skip the network for a while
   private currentAppId = 0;
 
   constructor(
@@ -73,14 +77,20 @@ export class AchievementWatcher {
     try {
       this.appReg = w.SteamClient?.GameSessions?.RegisterForAppLifetimeNotifications?.((u: any) => {
         try {
-          if (u?.unAppID && u?.bRunning) {
-            this.currentAppId = u.unAppID;
-            void this.ensurePct(u.unAppID);
-            this.preloadGameSounds(u.unAppID);
-          }
+          if (u?.unAppID && u?.bRunning) this.onGameStart(u.unAppID);
           else if (u?.unAppID && !u?.bRunning && u.unAppID === this.currentAppId) { this.currentAppId = 0; }
         } catch { /* ignore */ }
       });
+    } catch { /* optional */ }
+    // A game may already be running when the plugin (re)loads.
+    try {
+      const running = Number(w.SteamUIStore?.MainRunningAppID ?? w.SteamUIStore?.MainRunningApp?.appid ?? 0);
+      if (running) this.onGameStart(running);
+    } catch { /* optional */ }
+    // Fonts of the looks in use, so the first toast never waits for them.
+    try {
+      const s0 = getSettings();
+      for (const rare of [false, true]) void ensureFont(resolveLook(s0, rare).font);
     } catch { /* optional */ }
 
     this.installSuppression();
@@ -106,39 +116,93 @@ export class AchievementWatcher {
         const data = this.toData(name, undefined, pct);
         const o: ToastOptions = { ...this.opts(!!rare, s), ...(style || {}) };
         delete (o as any).onShow;
+        await ensureFont(o.font);
         return { previewHtml: renderPreviewHtml(data, o), card: await renderCardDebug(data, o) };
       },
     };
     return ok;
   }
 
-  // Rarity = global unlock % per achievement, keyed by apiname (== strID). We
-  // fetch Steam's public Web API from the frontend (CEF has working SSL; Python's
-  // urllib on the Deck can't verify certs). Only the appid leaves the device.
-  private async ensurePct(appid: number | string): Promise<Record<string, number>> {
+  /** Warm everything an unlock in this game will need. */
+  private onGameStart(appid: number): void {
+    this.currentAppId = appid;
+    void this.ensurePct(appid);
+    this.preloadGameSounds(appid);
+    try {
+      const s = getSettings();
+      for (const rare of [false, true]) void ensureFont(resolveLook(s, rare, appid).font);
+    } catch { /* optional */ }
+    void this.prewarmGameIcons(appid);
+  }
+
+  /** Cache the icons of this game's achievements on disk (for offline unlocks). */
+  private async prewarmGameIcons(appid: number): Promise<void> {
+    try {
+      const res = await w.SteamClient?.Apps?.GetMyAchievementsForApp?.(String(appid));
+      const list = extractAchievements(res);
+      // still-locked ones first: those are the ones that can pop
+      list.sort((a, b) => Number(!!a?.bAchieved) - Number(!!b?.bAchieved));
+      await prewarmIcons(list.map((a) => String(a?.strImage || '')).filter(Boolean));
+    } catch { /* best effort */ }
+  }
+
+  // Rarity = global unlock % per achievement, keyed by apiname (== strID). Sources,
+  // in order: Steam's public Web API (from the frontend — CEF has working SSL,
+  // Python's urllib on the Deck can't verify certs; only the appid leaves the
+  // device), our disk cache of it, the Steam client's own cached value.
+  private ensurePct(appid: number | string): Promise<Record<string, number>> {
     const k = String(appid);
     const cached = this.pctCache.get(k);
-    if (cached) return cached;
-    try {
-      const url = 'https://api.steampowered.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v0002/?gameid='
-        + Number(appid) + '&format=json';
-      const r = await fetch(url);
-      if (r.ok) {
-        const j = await r.json();
-        const rows = (j && j.achievementpercentages && j.achievementpercentages.achievements) || [];
-        const pct: Record<string, number> = {};
-        for (const x of rows) {
-          const n = x && x.name;
-          const p = parseFloat(x && x.percent);
-          if (n != null && isFinite(p)) pct[String(n)] = p;
-        }
-        this.pctCache.set(k, pct);
-        return pct;
-      }
-    } catch (e) {
-      console.warn('[achievement-toasts] rarity fetch failed', e);
+    if (cached) return Promise.resolve(cached);
+    let job = this.pctJobs.get(k);
+    if (!job) {
+      job = this.loadPct(k).finally(() => this.pctJobs.delete(k));
+      this.pctJobs.set(k, job);
     }
-    return {};
+    return job;
+  }
+
+  private async loadPct(k: string): Promise<Record<string, number>> {
+    let map: Record<string, number> | undefined;
+    if (navigator.onLine !== false && Date.now() >= this.netDownUntil) {
+      try {
+        const url = 'https://api.steampowered.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v0002/?gameid='
+          + Number(k) + '&format=json';
+        const r = await fetchWithTimeout(url, 2500);
+        if (r.ok) {
+          const j = await r.json();
+          const rows = (j && j.achievementpercentages && j.achievementpercentages.achievements) || [];
+          const pct: Record<string, number> = {};
+          for (const x of rows) {
+            const n = x && x.name;
+            const p = parseFloat(x && x.percent);
+            if (n != null && isFinite(p)) pct[String(n)] = p;
+          }
+          map = pct;
+          rarityToDisk(k, pct);
+        }
+      } catch (e) {
+        this.netDownUntil = Date.now() + 60000;
+        console.warn('[achievement-toasts] rarity fetch failed (using cache)', e);
+      }
+    }
+    const empty = (m?: Record<string, number>) => !m || !Object.keys(m).length;
+    if (empty(map)) map = (await rarityFromDisk(k)) ?? map;
+    if (empty(map)) map = await this.clientPct(k);
+    if (!empty(map)) this.pctCache.set(k, map as Record<string, number>);
+    return map ?? {};
+  }
+
+  /** The Steam client's own cached global % (present once Steam has synced the game). */
+  private async clientPct(k: string): Promise<Record<string, number>> {
+    const out: Record<string, number> = {};
+    try {
+      const res = await w.SteamClient?.Apps?.GetMyAchievementsForApp?.(k);
+      for (const a of extractAchievements(res)) {
+        if (a?.strID && typeof a.flAchieved === 'number' && a.flAchieved > 0) out[String(a.strID)] = a.flAchieved;
+      }
+    } catch { /* ignore */ }
+    return out;
   }
 
   private installSuppression(): void {
@@ -148,17 +212,19 @@ export class AchievementWatcher {
       const owner = findOwner(store, 'BShowToast');
       const orig = owner?.BShowToast;
       if (typeof orig === 'function') {
+        let live = true;
         const patched = function (this: any, ...args: any[]) {
           try {
             const s = getSettings();
             const notif = args.find((a) => a && typeof a === 'object' && 'eType' in a);
-            if (s.enabled && s.suppressNative && notif?.eType === ACHIEVEMENT_ETYPE) return false;
+            if (live && s.enabled && s.suppressNative && notif?.eType === ACHIEVEMENT_ETYPE) return false;
           } catch { /* ignore */ }
           return orig.apply(this, args);
         };
         try { (patched as any).toString = () => orig.toString(); } catch { /* ignore */ }
         owner.BShowToast = patched;
-        this.restoreToast = () => { owner.BShowToast = orig; };
+        // If another plugin patched over us, leave the chain alone and just go inert.
+        this.restoreToast = () => { live = false; if (owner.BShowToast === patched) owner.BShowToast = orig; };
       }
     } catch (e) { console.error('[achievement-toasts] patch BShowToast failed', e); }
 
@@ -166,16 +232,17 @@ export class AchievementWatcher {
       const owner = findOwner(store, 'PlayNotificationSound');
       const orig = owner?.PlayNotificationSound;
       if (typeof orig === 'function') {
+        let live = true;
         const patched = function (this: any, ...args: any[]) {
           try {
             const s = getSettings();
-            if (s.enabled && s.suppressNative && args?.[0]?.eType === ACHIEVEMENT_ETYPE) return;
+            if (live && s.enabled && s.suppressNative && args?.[0]?.eType === ACHIEVEMENT_ETYPE) return;
           } catch { /* ignore */ }
           return orig.apply(this, args);
         };
         try { (patched as any).toString = () => orig.toString(); } catch { /* ignore */ }
         owner.PlayNotificationSound = patched;
-        this.restoreSound = () => { owner.PlayNotificationSound = orig; };
+        this.restoreSound = () => { live = false; if (owner.PlayNotificationSound === patched) owner.PlayNotificationSound = orig; };
       }
     } catch (e) { console.error('[achievement-toasts] patch PlayNotificationSound failed', e); }
   }
@@ -189,9 +256,9 @@ export class AchievementWatcher {
 
     const ach = await this.resolveAchievement(appid, p);
 
-    // rarity: prefer the Web-API global %, fall back to the (unreliable) client value
+    // rarity: Web API / disk cache / Steam client map, else the event's own value
     let pct: number | undefined;
-    const map = this.pctCache.get(String(appid)) ?? (await this.ensurePct(appid));
+    const map = await this.ensurePct(appid);
     if (ach.strID && typeof map[ach.strID] === 'number') pct = map[ach.strID];
     else if (typeof ach.flAchieved === 'number' && ach.flAchieved > 0) pct = ach.flAchieved;
 
@@ -202,7 +269,7 @@ export class AchievementWatcher {
     const opts = this.opts(rare, s, appid);
     // Queue for the over-game overlay (composites above the running game); multiple
     // unlocks play one at a time, in order. Falls back to our popup window per item.
-    enqueueOverlay(data, opts, () => this.toast.show(data, opts));
+    enqueueOverlay(data, opts, () => { void ensureFont(opts.font).then(() => this.toast.show(data, opts)); });
   }
 
   private async resolveAchievement(appid: number, p: any): Promise<Resolved> {
@@ -269,7 +336,7 @@ export class AchievementWatcher {
     const data = this.toData(name, undefined, pct);
     // Use the running game's profile (if any) so per-game looks/sounds can be tested.
     const opts = this.opts(rare, s, this.currentAppId || undefined);
-    enqueueOverlay(data, opts, () => this.toast.show(data, opts));
+    enqueueOverlay(data, opts, () => { void ensureFont(opts.font).then(() => this.toast.show(data, opts)); });
   }
 
   /** Preview a specific theme/effect/ambient (doesn't touch saved settings). */

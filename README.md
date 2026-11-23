@@ -43,8 +43,10 @@ completely different. 🦊
   Adjustable on-screen duration, and a **queue** so several unlocks play one after another.
 - 🌍 **Languages** — English and Brazilian Portuguese, following the system language by default.
 
-> ℹ️ The display fonts are pulled from Google Fonts on demand (cached after first use). Offline, the
-> toast falls back to a system font automatically.
+> ℹ️ **Works offline.** The display fonts ship inside the plugin (SIL OFL, see `assets/fonts/OFL.txt`) —
+> nothing is requested from the network. Achievement rarity and icons are cached on disk the first
+> time a game runs online, so later offline unlocks still show the real icon and rarity. Your
+> settings and presets are also backed up on disk and restored if Steam's web cache is cleared.
 
 ## 🎨 Themes
 

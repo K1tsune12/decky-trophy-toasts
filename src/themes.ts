@@ -237,8 +237,8 @@ export interface FontDef {
   id: string;
   name: string;
   stack: string;
-  /** Google Fonts CSS URL to @import when this font is chosen. */
-  import?: string;
+  /** A display font shipped inside the plugin (assets/fonts) and served inline. */
+  bundled?: boolean;
 }
 
 export const FONTS: FontDef[] = [
@@ -246,13 +246,13 @@ export const FONTS: FontDef[] = [
   { id: 'sans', name: 'Steam Sans', stack: '"Motiva Sans","Segoe UI",system-ui,sans-serif' },
   { id: 'serif', name: 'Serif', stack: 'Georgia,"Noto Serif","Times New Roman",serif' },
   { id: 'mono', name: 'Monospace', stack: '"Consolas","DejaVu Sans Mono",monospace' },
-  { id: 'orbitron', name: 'Orbitron (futuristic)', stack: '"Orbitron","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Orbitron:wght@500;800&display=swap' },
-  { id: 'russo', name: 'Russo One (bold)', stack: '"Russo One","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Russo+One&display=swap' },
-  { id: 'audiowide', name: 'Audiowide (tech)', stack: '"Audiowide","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Audiowide&display=swap' },
-  { id: 'press', name: 'Press Start 2P (pixel)', stack: '"Press Start 2P",monospace', import: 'https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap' },
-  { id: 'cinzel', name: 'Cinzel (epic)', stack: '"Cinzel",Georgia,serif', import: 'https://fonts.googleapis.com/css2?family=Cinzel:wght@600;800&display=swap' },
-  { id: 'nunito', name: 'Nunito (rounded)', stack: '"Nunito","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Nunito:wght@700;900&display=swap' },
-  { id: 'teko', name: 'Teko (condensed)', stack: '"Teko","Segoe UI",sans-serif', import: 'https://fonts.googleapis.com/css2?family=Teko:wght@500;700&display=swap' },
+  { id: 'orbitron', name: 'Orbitron (futuristic)', stack: '"Orbitron","Segoe UI",sans-serif', bundled: true },
+  { id: 'russo', name: 'Russo One (bold)', stack: '"Russo One","Segoe UI",sans-serif', bundled: true },
+  { id: 'audiowide', name: 'Audiowide (tech)', stack: '"Audiowide","Segoe UI",sans-serif', bundled: true },
+  { id: 'press', name: 'Press Start 2P (pixel)', stack: '"Press Start 2P",monospace', bundled: true },
+  { id: 'cinzel', name: 'Cinzel (epic)', stack: '"Cinzel",Georgia,serif', bundled: true },
+  { id: 'nunito', name: 'Nunito (rounded)', stack: '"Nunito","Segoe UI",sans-serif', bundled: true },
+  { id: 'teko', name: 'Teko (condensed)', stack: '"Teko","Segoe UI",sans-serif', bundled: true },
 ];
 
 export function getFont(id: string): FontDef | undefined {
@@ -263,10 +263,18 @@ export function resolveFontStack(theme: Theme, id?: string): string {
   const f = id ? getFont(id) : undefined;
   return f && f.stack ? f.stack : theme.font;
 }
-/** The @import rule needed for a font override, or '' for none. */
+// Inline @font-face CSS of the bundled fonts, filled in by offline.ts (ensureFont)
+// from the plugin's own files. Nothing is ever requested from the network.
+const fontCssCache = new Map<string, string>();
+export function setFontCss(id: string, css: string): void {
+  fontCssCache.set(id, css);
+}
+export function hasFontCss(id: string): boolean {
+  return fontCssCache.has(id);
+}
+/** The inline @font-face CSS for a font override ('' = system font / not loaded yet). */
 export function fontImport(id?: string): string {
-  const f = id ? getFont(id) : undefined;
-  return f && f.import ? `@import url('${f.import}');` : '';
+  return (id && fontCssCache.get(id)) || '';
 }
 
 export type EffectGroup = 'outline' | 'particles' | 'flair';
