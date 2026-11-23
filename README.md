@@ -25,22 +25,29 @@ completely different. 🦊
   the name) that **previews the toast as you tweak it**. Split into a **Visual** tab (per-tier look) and a
   **General** tab (shared settings), with a pinned preview and a **Replay** (with optional sound).
 - 🎁 **Presets** — ready-made looks applied in one tap: hand-tuned combos (*Kitsune*, *Clean & Subtle*,
-  *Big Party*, *Neon Arcade*) **plus one per theme**. Applied to the selected tier so you never lose the other.
+  *Big Party*, *Neon Arcade*, *Vampyr*, *Halloween*, *Ghost*, *Toxic*, *Frostbite*) **plus one per theme**.
+  Save your own (per tier or both), with their sound, and **export / import** them as a file.
 - 💎 **Rarity aware** — uses Steam's public global unlock %. An achievement is *rare* below a threshold
   you set (default **10%**, Steam's own cutoff). Rare toasts get a gold accent, a **RARE** badge, a
   gold icon frame and a shimmer.
-- 🎨 **Deeply customizable** — **10 themes**, **4 layouts**, **9 entrance effects**, **6 screen positions**,
+- 🎨 **Deeply customizable** — **14 themes**, **4 layouts**, **9 entrance effects**, **6 screen positions**,
   accent color, **grouped effects** (one outline + one particle style + free "flair"), and an
   **effect color** for the flash and particles — all set **separately for common and rare** unlocks.
 - 🔤 **Fonts** — pick a font per tier: system stacks plus display fonts (Orbitron, Russo One, Audiowide,
   Press Start 2P, Cinzel, Nunito, Teko).
-- 🎮 **Per-game presets** — give specific games their own look; everything else uses your default.
+- 🎮 **Per-game presets** — give specific games their own look *and sound*; every other game uses the
+  **default preset** you pick.
+- 📏 **Size & screens** — a size control for the over-game toast, and automatic scaling by the real
+  output resolution so it keeps the same relative size on a dock or a TV.
+- 💬 **Description (optional)** — show the achievement's description under its name.
 - 🔊 **Sounds** — separate, configurable sounds for common and rare (bundled sounds or your own files),
   with per-sound and master volume.
 - 🔕 **Replaces Steam's popup** — optionally hides Steam's small achievement toast and native sound so
-  only this one shows. No doubled popup or sound.
+  only this one shows. No doubled popup or sound. If the over-game overlay can't run on a system,
+  Steam's own toast is left on, so an unlock is never missed.
 - 📝 **Full name, always** — long names wrap to as many lines as needed; the toast sizes to fit.
-  Adjustable on-screen duration, and a **queue** so several unlocks play one after another.
+  Adjustable on-screen duration, and a **queue** so several unlocks play one after another — with a
+  setting for how many seconds each one gets while others are waiting.
 - 🌍 **Languages** — English and Brazilian Portuguese, following the system language by default.
 
 > ℹ️ **Works offline.** The display fonts ship inside the plugin (SIL OFL, see `assets/fonts/OFL.txt`) —
@@ -51,7 +58,7 @@ completely different. 🦊
 ## 🎨 Themes
 
 Kitsune Glass · Kitsune Gold · Emerald Hero · Platinum Trophy · Arcade Neon · Royal Violet ·
-Crimson Ember · Frostbite · Minimal · Retro Pixel
+Crimson Ember · Vampyr · Halloween · Ghost · Toxic · Frostbite · Minimal · Retro Pixel
 
 > All themes are original — no game logos or artwork are included.
 

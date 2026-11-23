@@ -14,6 +14,8 @@ import hashlib
 import json
 import os
 import re
+import signal
+import time
 import shutil
 import subprocess
 
@@ -314,10 +316,11 @@ class Plugin:
             pass
 
     async def show_overlay(self, png_b64, anchor="top-center", margin=28,
-                           w=0, h=0, dur_ms=5000, anim="slide"):
+                           w=0, h=0, dur_ms=5000, anim="slide", auto_scale=True):
         """Render the toast card OVER the running game. `png_b64` is the card as a
-        base64 PNG (data: URI prefix allowed). w/h are the card's display size; the
-        helper positions it by `anchor` within the output."""
+        base64 PNG (data: URI prefix allowed). w/h are the card's display size on a
+        1280x800 screen; with `auto_scale` the helper scales them by the real output
+        resolution (dock / TV). The helper positions the card by `anchor`."""
         try:
             if not os.path.isfile(_HELPER):
                 return {"ok": False, "error": "overlay helper missing"}
@@ -343,11 +346,93 @@ class Plugin:
                 "--anchor", anchor, "--margin", str(int(margin)),
                 "--w", str(int(w)), "--h", str(int(h)),
                 "--dur-ms", str(int(dur_ms)), "--anim", anim,
+                "--auto-scale", "1" if auto_scale else "0",
             ]
             self._overlay_proc = self._launch_helper(args_list)
             return {"ok": True}
         except Exception as err:  # pylint: disable=broad-except
             decky.logger.exception("show_overlay failed")
+            return {"ok": False, "error": str(err)}
+
+    async def dismiss_overlay(self):
+        """Ask the current overlay to play its exit animation now (more toasts queued)."""
+        try:
+            proc = getattr(self, "_overlay_proc", None)
+            if proc is not None and proc.poll() is None:
+                proc.send_signal(signal.SIGUSR1)
+                return {"ok": True}
+            return {"ok": False}
+        except Exception as err:  # pylint: disable=broad-except
+            return {"ok": False, "error": str(err)}
+
+    async def overlay_alive(self):
+        """Whether the helper launched by the last show_overlay is still running. A
+        helper that died right after launch means the toast never showed."""
+        proc = getattr(self, "_overlay_proc", None)
+        return {"alive": proc is not None and proc.poll() is None}
+
+    async def overlay_check(self):
+        """One-off self test: can the overlay helper run here at all (python3 with
+        GTK 3 + cairo, an X display)? The frontend only hides Steam's own achievement
+        toast while this holds, so an unlock is never left with no notification."""
+        try:
+            if not os.path.isfile(_HELPER):
+                return {"ok": False, "error": "helper missing"}
+            code = ("import cairo, gi; gi.require_version('Gtk', '3.0'); "
+                    "from gi.repository import Gtk, Gdk, GdkPixbuf; "
+                    "import sys; sys.exit(0 if Gtk.init_check(None)[0] else 3)")
+            env = dict(os.environ, DISPLAY=":0", GDK_BACKEND="x11", XDG_RUNTIME_DIR="/run/user/1000")
+            cmd = ["python3", "-W", "ignore", "-c", code]
+            if os.geteuid() == 0 and shutil.which("runuser"):
+                cmd = ["runuser", "-u", "deck", "--", "env", "DISPLAY=:0", "GDK_BACKEND=x11",
+                       "XDG_RUNTIME_DIR=/run/user/1000"] + cmd
+            res = subprocess.run(cmd, env=env, check=False, timeout=12,
+                                 stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            if res.returncode == 0:
+                return {"ok": True}
+            return {"ok": False, "error": (res.stderr or b"").decode("utf-8", "replace")[-300:]
+                    or f"exit {res.returncode}"}
+        except Exception as err:  # pylint: disable=broad-except
+            return {"ok": False, "error": str(err)}
+
+    async def display_info(self):
+        """The output resolution the overlay is drawn on ({w, h}; 1280x800 on a Deck)."""
+        try:
+            env = dict(os.environ, DISPLAY=":0")
+            res = subprocess.run(["xdpyinfo"], env=env, check=False, timeout=4,
+                                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            found = re.search(r"dimensions:\s+(\d+)x(\d+)", (res.stdout or b"").decode("utf-8", "replace"))
+            if found:
+                return {"ok": True, "w": int(found.group(1)), "h": int(found.group(2))}
+        except Exception:  # pylint: disable=broad-except
+            pass
+        return {"ok": False, "w": 1280, "h": 800}
+
+    # --- Preset export / import ---------------------------------------------------
+    async def export_presets(self, folder: str, data: str):
+        """Write the presets JSON into `folder`; returns the file path."""
+        try:
+            if not folder or not os.path.isdir(folder) or len(data or "") > _MAX_JSON_CHARS:
+                return {"ok": False, "error": "invalid folder"}
+            json.loads(data)
+            path = os.path.join(folder, time.strftime("trophy-toasts-presets-%Y%m%d-%H%M%S.json"))
+            _write_atomic(path, data)
+            return {"ok": True, "path": path}
+        except Exception as err:  # pylint: disable=broad-except
+            return {"ok": False, "error": str(err)}
+
+    async def import_presets(self, path: str):
+        """Read a presets JSON file chosen by the user; returns its text."""
+        try:
+            if not path or not path.lower().endswith(".json") or not os.path.isfile(path):
+                return {"ok": False, "error": "not a .json file"}
+            if os.path.getsize(path) > _MAX_JSON_CHARS:
+                return {"ok": False, "error": "file too large"}
+            with open(path, "r", encoding="utf-8") as file:
+                text = file.read()
+            json.loads(text)
+            return {"ok": True, "data": text}
+        except Exception as err:  # pylint: disable=broad-except
             return {"ok": False, "error": str(err)}
 
     async def hide_overlay(self):

@@ -9,12 +9,13 @@ import {
   ToggleField,
   staticClasses,
 } from '@decky/ui';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FaCog, FaTrophy } from 'react-icons/fa';
 
 import { AchievementWatcher } from './achievements';
 import { initLanguage, t, useLanguage } from './i18n';
 import { initSettingsSync, stopSettingsSync } from './offline';
+import { checkOverlay } from './overlay';
 import { runtime } from './runtime';
 import { AchSettings, getSettings, saveSettings } from './settings';
 import { SoundPlayer } from './sound';
@@ -38,9 +39,19 @@ function SettingsPanel() {
   const lang = useLanguage();
   const [s, setS] = useState<AchSettings>(() => getSettings());
   const update = (patch: Partial<AchSettings>) => setS(saveSettings(patch));
+  // Re-test the overlay each time the panel opens, and say so plainly if it's down.
+  const [overlayOk, setOverlayOk] = useState(true);
+  useEffect(() => { let on = true; void checkOverlay().then((ok) => { if (on) setOverlayOk(ok); }); return () => { on = false; }; }, []);
 
   return (
     <>
+      {!overlayOk && (
+        <PanelSection>
+          <PanelSectionRow>
+            <div style={{ fontSize: 12, lineHeight: 1.35, padding: '6px 8px', borderRadius: 4, background: 'rgba(255,170,60,0.16)' }}>{t('overlay.unavailable')}</div>
+          </PanelSectionRow>
+        </PanelSection>
+      )}
       <PanelSection title={t('app.title')}>
         <PanelSectionRow>
           <ToggleField label={t('app.enable')} checked={s.enabled} onChange={(v) => update({ enabled: v })} />

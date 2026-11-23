@@ -37,6 +37,16 @@ export interface AchSettings {
   durationRareMs: number;
   /** Toast width in logical px (height adapts to content). */
   width: number;
+  /** Over-game size, percent (100 = default). Scales the whole toast on screen. */
+  overlayScale: number;
+  /** Also scale by the real output resolution, so a dock / TV keeps the same
+   *  relative size as the Deck's own screen. */
+  autoDisplayScale: boolean;
+  /** When more unlocks are waiting, show each toast for this many seconds
+   *  (0 = always the full duration). */
+  queueSeconds: number;
+  /** Show the achievement's description under its name. */
+  showDescription: boolean;
 
   // --- appearance (ids reference themes.ts) ---
   /** Where on screen the toast appears. */
@@ -102,6 +112,10 @@ export const DEFAULT_SETTINGS: AchSettings = {
   durationCommonMs: 10000,
   durationRareMs: 11000,
   width: 500,
+  overlayScale: 100,
+  autoDisplayScale: true,
+  queueSeconds: 4,
+  showDescription: false,
   position: 'top-center',
   layout: 'standard',
   themeCommon: 'kitsune-glass',
@@ -258,6 +272,32 @@ export function deleteCustomPreset(id: string): AchSettings {
   if (dp.common && dp.common !== id) defaultPreset.common = dp.common;
   if (dp.rare && dp.rare !== id) defaultPreset.rare = dp.rare;
   return saveSettings({ customPresets, gamePresets, defaultPreset });
+}
+
+/** Merge presets read from an exported file. Each gets a fresh id; exact
+ *  duplicates (same name + same looks) are skipped. Returns how many were added. */
+export function importCustomPresets(list: unknown): { settings: AchSettings; added: number } {
+  const cur = getSettings();
+  const out = [...cur.customPresets];
+  const sig = (p: Preset) => JSON.stringify([p.name, p.scope, p.common, p.rare]);
+  const seen = new Set(out.map(sig));
+  let added = 0;
+  const okTier = (t: unknown): t is LookTier =>
+    !!t && typeof t === 'object' && typeof (t as LookTier).theme === 'string' && Array.isArray((t as LookTier).fx);
+  for (const raw of Array.isArray(list) ? list : []) {
+    if (!raw || typeof raw !== 'object') continue;
+    const r = raw as Preset;
+    const common = okTier(r.common) ? { ...r.common, fx: sanitizeFx(r.common.fx) } : undefined;
+    const rare = okTier(r.rare) ? { ...r.rare, fx: sanitizeFx(r.rare.fx) } : undefined;
+    if (!common && !rare) continue;
+    const scope: Preset['scope'] = common && rare ? 'both' : rare ? 'rare' : 'common';
+    const preset: Preset = { id: newPresetId('i'), name: String(r.name || 'Preset').slice(0, 60), scope, common, rare };
+    if (seen.has(sig(preset))) continue;
+    seen.add(sig(preset));
+    out.push(preset);
+    added += 1;
+  }
+  return { settings: added ? saveSettings({ customPresets: out }) : cur, added };
 }
 
 /** Final playback volume (0..1) for a slot volume, after the master volume. */

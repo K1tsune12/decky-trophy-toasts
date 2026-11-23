@@ -23,6 +23,8 @@ export interface ToastData {
   pct?: number;
   /** Fully localized rarity line (e.g. "Only 2.3% of players have this"). */
   rarityText?: string;
+  /** The achievement's description (shown only when the option is on). */
+  description?: string;
 }
 
 export interface ToastStyle {
@@ -47,6 +49,8 @@ export interface ToastStyle {
   cardOpacity?: number;
   /** Frosted-glass blur on the card background (undefined = theme default). */
   glass?: boolean;
+  /** Show the achievement description under the name. */
+  showDescription?: boolean;
   /** Localized eyebrow + badge text. */
   eyebrow: string;
   badge: string;
@@ -56,6 +60,10 @@ export interface ToastOptions extends ToastStyle {
   rare: boolean;
   durationMs: number;
   width: number;
+  /** Over-game size, percent (100 = default). */
+  overlayScale?: number;
+  /** Scale the over-game toast by the real output resolution (dock / TV). */
+  autoDisplayScale?: boolean;
   /** Fired when this toast actually becomes visible (for syncing sound to display). */
   onShow?: () => void;
 }
@@ -238,6 +246,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
   const badgeHtml = opts.rare && opts.badge
     ? `<span class="badge">${esc(opts.badge)}</span>` : '';
   const rarityHtml = data.rarityText ? `<div class="rar">${esc(data.rarityText)}</div>` : '';
+  const descHtml = opts.showDescription && data.description ? `<div class="desc">${esc(data.description)}</div>` : '';
 
   // Icon wrapper; stamp + shockwave are entrance one-shots on it.
   const iconFxCss =
@@ -352,6 +361,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
   .eb{font-size:${lay.eyebrowPx}px;font-weight:700;letter-spacing:2px;text-transform:uppercase;${eyebrowStyle}}
   .badge{display:inline-block;margin-left:8px;padding:1px 7px;font-size:10px;font-weight:800;letter-spacing:1px;border-radius:2px;color:#15100a;background:linear-gradient(90deg,${accA},${accB});vertical-align:middle;}
   .nm{font-size:${lay.namePx}px;font-weight:800;color:${theme.nameColor};line-height:1.2;word-break:break-word;text-shadow:0 1px 2px rgba(0,0,0,0.8),0 0 6px rgba(0,0,0,0.5);}
+  .desc{font-size:${lay.rarityPx}px;font-weight:500;color:${theme.nameColor};opacity:.82;line-height:1.25;margin-top:1px;word-break:break-word;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:3;overflow:hidden;}
   .rar{font-size:${lay.rarityPx}px;font-weight:600;color:${theme.rarityColor};margin-top:1px;}
   .rar b{color:${theme.pctColor};}
   @keyframes kf_out{to{opacity:0;transform:translateY(-22px) scale(.98);}}
@@ -369,6 +379,7 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
       <div class="txt">
         <div class="eb">${esc(opts.eyebrow)}${badgeHtml}</div>
         <div class="nm">${esc(data.name)}</div>
+        ${descHtml}
         ${rarityHtml}
       </div>
     </div>

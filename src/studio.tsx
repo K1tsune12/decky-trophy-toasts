@@ -3,6 +3,7 @@
 // split across native Tabs (Look = per-tier appearance; General = shared) so the
 // controller's L1/R1 tab switching behaves correctly.
 
+import { FileSelectionType, call, openFilePicker } from '@decky/api';
 import { ButtonItem, DialogButton, Focusable, Navigation, PanelSection, PanelSectionRow, SliderField, Tabs, TextField, ToggleField } from '@decky/ui';
 import { useEffect, useMemo, useState } from 'react';
 import { FaArrowLeft, FaVolumeMute, FaVolumeUp } from 'react-icons/fa';
@@ -12,7 +13,7 @@ import { t, tr, useLanguage } from './i18n';
 import { Preset, allPresets, buildOpts, presetPatchTier, presetsForTier, tierLook } from './presets';
 import { ensureFont } from './offline';
 import { runtime } from './runtime';
-import { AchSettings, deleteCustomPreset, getSettings, saveMasterPreset, saveSettings, saveTierPreset, setDefaultPreset, setGamePreset } from './settings';
+import { AchSettings, deleteCustomPreset, getSettings, importCustomPresets, saveMasterPreset, saveSettings, saveTierPreset, setDefaultPreset, setGamePreset } from './settings';
 import { LAYOUTS, POSITIONS, getTheme, resolveAccent } from './themes';
 import { ToastData, renderPreviewHtml } from './toastWindow';
 
@@ -41,10 +42,12 @@ function appName(appid: number | string): string {
 }
 
 function previewData(rare: boolean): ToastData {
+  // (the description only renders when the "show description" option is on)
   const pct = rare ? 2.3 : 47.5;
   return {
     name: rare ? tr('toast.sampleRare') : tr('toast.sampleCommon'),
     pct,
+    description: tr(rare ? 'toast.sampleDescRare' : 'toast.sampleDescCommon'),
     rarityText: tr('toast.rarity', { pct: String(pct) }),
   };
 }
@@ -107,7 +110,7 @@ export function TrophyStudio() {
   // changing sound/volume/duration/threshold never recomputes it (which would
   // reload the iframe and make the card flash/disappear). nonce forces a replay.
   const look = tierLook(s, rareTier);
-  const previewKey = JSON.stringify([look, s.width, s.position, s.layout, rareTier, nonce]);
+  const previewKey = JSON.stringify([look, s.width, s.position, s.layout, s.showDescription, rareTier, nonce]);
   const html = useMemo(
     // The nonce marker makes the srcDoc change on Replay/tier/preset changes so the
     // iframe reloads and the entrance animation plays again; it stays out of the key
@@ -128,6 +131,31 @@ export function TrophyStudio() {
     if (scope === 'both') setS(saveMasterPreset(nm, tierLook(s, false), tierLook(s, true)));
     else setS(saveTierPreset(nm, scope, tierLook(s, scope === 'rare')));
     setPresetName('');
+  };
+  // Presets backup: write them to a file in a folder you pick / read one back.
+  const [ioMsg, setIoMsg] = useState('');
+  const exportPresets = async () => {
+    try {
+      const pick = await openFilePicker(FileSelectionType.FOLDER, '/home/deck', false, true);
+      if (!pick?.path) return;
+      const payload = JSON.stringify({ app: 'decky-trophy-toasts', version: 1, presets: s.customPresets }, null, 1);
+      const r = await call<[string, string], { ok: boolean; path?: string; error?: string }>('export_presets', pick.path, payload);
+      setIoMsg(r?.ok ? t('presets.exported', { file: r.path || '' }) : t('presets.ioError', { e: r?.error || '?' }));
+    } catch { /* cancelled */ }
+  };
+  const importPresets = async () => {
+    try {
+      const pick = await openFilePicker(FileSelectionType.FILE, '/home/deck', true, true, undefined, ['json'], false, false);
+      if (!pick?.path) return;
+      const r = await call<[string], { ok: boolean; data?: string; error?: string }>('import_presets', pick.path);
+      if (!r?.ok || !r.data) { setIoMsg(t('presets.ioError', { e: r?.error || '?' })); return; }
+      const parsed = JSON.parse(r.data);
+      const res = importCustomPresets(Array.isArray(parsed) ? parsed : parsed?.presets);
+      setS(res.settings);
+      setIoMsg(t('presets.imported', { n: res.added }));
+    } catch (e) {
+      if (e) setIoMsg(t('presets.ioError', { e: String((e as Error)?.message || e) }));
+    }
   };
   const testOnScreen = () => { try { w.__kitsuneAchievementToasts?.simulate?.(rareTier); } catch { /* ignore */ } };
   // Replay the in-panel preview; optionally play the tier's sound alongside it.
@@ -218,11 +246,23 @@ export function TrophyStudio() {
           options={POSITIONS.map((p) => ({ data: p.id, label: t(`pos.${p.id}` as any) }))}
           onChange={(v) => update({ position: v })} />
         <Dropdown label={t('appearance.layout')} disabled={!s.enabled} value={s.layout}
-          options={LAYOUTS.map((l) => ({ data: l.id, label: l.name }))}
+          options={LAYOUTS.map((l) => ({ data: l.id, label: t(`layout.${l.id}` as any) }))}
           onChange={(v) => { update({ layout: v }); bump(); }} />
         <PanelSectionRow>
           <SliderField label={t('behavior.width')} disabled={!s.enabled}
             value={s.width} min={300} max={820} step={20} showValue onChange={(v) => { update({ width: v }); bump(); }} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <SliderField label={t('behavior.size')} description={t('behavior.sizeDesc')} disabled={!s.enabled}
+            value={s.overlayScale} min={60} max={180} step={5} showValue onChange={(v) => update({ overlayScale: v })} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label={t('behavior.autoScale')} description={t('behavior.autoScaleDesc')}
+            disabled={!s.enabled} checked={s.autoDisplayScale} onChange={(v) => update({ autoDisplayScale: v })} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField label={t('behavior.showDesc')} description={t('behavior.showDescDesc')}
+            disabled={!s.enabled} checked={s.showDescription} onChange={(v) => { update({ showDescription: v }); bump(); }} />
         </PanelSectionRow>
       </PanelSection>
 
@@ -256,6 +296,11 @@ export function TrophyStudio() {
           <SliderField label={t('behavior.rareThreshold')} description={t('behavior.rareThresholdDesc')}
             disabled={!s.enabled} value={s.rareThreshold} min={1} max={50} step={1} showValue
             onChange={(v) => update({ rareThreshold: v })} />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <SliderField label={t('behavior.queue')} description={t('behavior.queueDesc')}
+            disabled={!s.enabled} value={s.queueSeconds} min={0} max={10} step={1} showValue
+            onChange={(v) => update({ queueSeconds: v })} />
         </PanelSectionRow>
       </PanelSection>
 
@@ -388,6 +433,21 @@ export function TrophyStudio() {
             </Focusable>
           </PanelSectionRow>
         ))}
+      </PanelSection>
+
+      <PanelSection title={t('presets.ioTitle')}>
+        <PanelSectionRow>
+          <div style={{ fontSize: 12, opacity: 0.6, paddingBottom: 6 }}>{t('presets.ioDesc')}</div>
+        </PanelSectionRow>
+        <Focusable style={{ display: 'flex', flexWrap: 'wrap', gap: 8, padding: '4px 0' }}>
+          <DialogButton style={{ flex: '1 1 45%', minWidth: 160, height: 40 }} disabled={!s.customPresets.length} onClick={() => void exportPresets()}>{t('presets.export')}</DialogButton>
+          <DialogButton style={{ flex: '1 1 45%', minWidth: 160, height: 40 }} onClick={() => void importPresets()}>{t('presets.import')}</DialogButton>
+        </Focusable>
+        {ioMsg && (
+          <PanelSectionRow>
+            <div style={{ fontSize: 12, opacity: 0.8, padding: '6px 0', wordBreak: 'break-all' }}>{ioMsg}</div>
+          </PanelSectionRow>
+        )}
       </PanelSection>
     </div>
   );

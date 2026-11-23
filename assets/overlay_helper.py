@@ -22,7 +22,9 @@ Usage:
 import argparse
 import math
 import os
+import signal
 import subprocess
+import sys
 import time
 import traceback
 
@@ -86,10 +88,12 @@ def read_flags(pixbuf, h):
         glowa = num(rblock + 18)                       # 37: glow alpha (0..100)
         acctop = num(rblock + 19) > 0                  # 38: accent bar on top (centered)
         rare = num(rblock + 20) > 0                    # 39: rare tier (shimmer + glow pulse)
+        layers = num(rblock + 21) > 0                  # 40: sheet = card / card-no-icon / icon
+        rs = num(rblock + 22)                          # 41: render scale (sheet px per CSS px)
         return {"magic": True, "fx": fx, "ambient": ambient, "radius": radius,
                 "icon": icon, "anim": anim, "accent": acc, "fxcolor": fxc,
                 "accentb": accb, "cardopacity": copac, "glow": glow, "glowa": glowa,
-                "acctop": acctop, "rare": rare}
+                "acctop": acctop, "rare": rare, "layers": layers, "rs": rs}
     except Exception:  # noqa: BLE001  pylint: disable=broad-except
         return {}
 
@@ -117,6 +121,8 @@ def parse_args():
                             "center"])
     p.add_argument("--margin", type=int, default=28)
     p.add_argument("--anim", default="slide", choices=["slide", "fade", "none"])
+    p.add_argument("--auto-scale", type=int, default=0,
+                   help="1 = scale the card by the real screen size (w/h/margin are for 1280x800)")
     p.add_argument("--dump-dir", default="", help="test harness: write frames here and exit")
     p.add_argument("--dump-times", default="", help="comma-separated ms for --dump-dir")
     return p.parse_args()
@@ -253,7 +259,7 @@ def main():
         sheet = GdkPixbuf.Pixbuf.new_from_file(args.png)
     except Exception as err:  # noqa: BLE001  pylint: disable=broad-except
         log("cannot load png: " + str(err))
-        return
+        sys.exit(2)
 
     # The PNG is the static card plus a few flag rows at the bottom that carry the
     # effect config (which effects to animate). Crop those off and decode them.
@@ -262,13 +268,47 @@ def main():
     flags = read_flags(sheet, sheet_h)
     if not flags:
         flags = {"fx": {"glint", "comet"}, "ambient": "", "radius": 0, "anim": "slide-down"}
-    card_src_h = max(1, sheet_h - FLAG_ROWS)
-    card_w = args.w or sheet_w
-    card_h = args.h or card_src_h
-    card_pb = sheet.new_subpixbuf(0, 0, sheet_w, card_src_h)
-    if card_w != sheet_w or card_h != card_src_h:
-        card_pb = card_pb.scale_simple(card_w, card_h, GdkPixbuf.InterpType.BILINEAR)
+    # With the icon "pop" on, the sheet stacks three renders of the card: the full
+    # card, the card WITHOUT its icon, and the icon alone on transparent — so the
+    # icon can really grow in from 0.4x like the CSS does (not just bump).
+    has_layers = bool(flags.get("layers", False))
+    card_src_h = max(1, (sheet_h - FLAG_ROWS) // (3 if has_layers else 1))
+
+    # Real output size. w/h/margin arrive sized for the Deck's 1280x800; on a dock or
+    # a TV (--auto-scale) everything is scaled by the actual resolution so the toast
+    # keeps the same relative size.
+    try:
+        _scr = Gdk.Screen.get_default()
+        _dsw, _dsh = _scr.get_width(), _scr.get_height()
+    except Exception:  # noqa: BLE001  pylint: disable=broad-except
+        _dsw, _dsh = 1280, 800
+    screen_w = args.screen_w or _dsw or 1280
+    screen_h = args.screen_h or _dsh or 800
+    ui_k = 1.0
+    if args.auto_scale:
+        ui_k = max(0.5, min(4.0, min(screen_w / 1280.0, screen_h / 800.0)))
+    card_w = float(args.w or sheet_w) * ui_k
+    card_h = float(args.h or card_src_h) * ui_k
+    fit = min(1.0, (screen_w * 0.94) / card_w, (screen_h * 0.6) / card_h)   # always fits
+    card_w = max(1, int(round(card_w * fit)))
+    card_h = max(1, int(round(card_h * fit)))
+    margin = int(round(args.margin * ui_k))
+
+    def _layer(index):
+        pb = sheet.new_subpixbuf(0, index * card_src_h, sheet_w, card_src_h)
+        if card_w != sheet_w or card_h != card_src_h:
+            pb = pb.scale_simple(card_w, card_h, GdkPixbuf.InterpType.BILINEAR)
+        return pb
+
+    card_pb = _layer(0)
     card0 = Gdk.cairo_surface_create_from_pixbuf(card_pb, 1, None)
+    card_noicon = icon_layer = None
+    if has_layers:
+        try:
+            card_noicon = Gdk.cairo_surface_create_from_pixbuf(_layer(1), 1, None)
+            icon_layer = Gdk.cairo_surface_create_from_pixbuf(_layer(2), 1, None)
+        except Exception:  # noqa: BLE001  pylint: disable=broad-except
+            card_noicon = icon_layer = None
     # Use the EXACT accent color the card was styled with (encoded in the PNG), so
     # a white theme bar is never mistaken for gold. Fall back to pixel-sampling.
     _ac = flags.get("accent", (0, 0, 0))
@@ -297,8 +337,10 @@ def main():
         glow_col, glow_a = (1.0, 1.0, 1.0), 0.4      # CSS: theme.glow || white .4
     has_card_glow = flags.get("glowa", 0) > 0        # CSS: box-shadow 0 0 16px glow
     acc_top = bool(flags.get("acctop", False))
-    # The card is rendered at RENDER_SCALE=2 (css->sheet), then shown at card_w.
-    rscale = (2.0 * card_w / sheet_w) if sheet_w else 1.0
+    # The sheet is rendered at `rs` px per CSS px (2, or 3 for big screens), then
+    # shown at card_w: rscale = display px per CSS px.
+    _rs = float(flags.get("rs", 0) or 2)
+    rscale = (_rs * card_w / sheet_w) if sheet_w else 1.0
     disp_radius = flags.get("radius", 0) * rscale
     bar_w = max(2.0, 5.0 * rscale)                 # accent bar: 5px CSS
     icon_r = min(flags.get("radius", 0), 8) * rscale  # icon/shockwave corner radius
@@ -338,11 +380,9 @@ def main():
     if visual is not None:
         win.set_visual(visual)
 
-    screen_w = args.screen_w or screen.get_width() or 1280
-    screen_h = args.screen_h or screen.get_height() or 800
     win.set_default_size(screen_w, screen_h)
 
-    pos_x, pos_y = anchor_xy(args.anchor, args.margin, screen_w, screen_h, card_w, card_h)
+    pos_x, pos_y = anchor_xy(args.anchor, margin, screen_w, screen_h, card_w, card_h)
     log("screen=%dx%d card=%dx%d pos=%d,%d" % (screen_w, screen_h, card_w, card_h, pos_x, pos_y))
 
     anim = {"start": time.monotonic()}
@@ -511,11 +551,11 @@ def main():
     }
     enter_on = args.anim != "none"
     exit_ms = 340.0 if enter_on else 0.0               # CSS kf_out .34s ease-in
-    hold_end = max(0.0, args.dur_ms - exit_ms)
+    tm = {"hold_end": max(0.0, args.dur_ms - exit_ms), "done": False}
 
     def card_state(el):
-        """(opacity, tx, ty, scale, scale_y, brightness+) of the card at time el."""
-        op, tx, ty, sc, sy, br = 1.0, 0.0, 0.0, 1.0, 1.0, 0.0
+        """(opacity, tx, ty, scale, rotateX deg, brightness+) of the card at time el."""
+        op, tx, ty, sc, rx, br = 1.0, 0.0, 0.0, 1.0, 0.0, 0.0
         if enter_on:
             dur, timing, props = ENTRANCES.get(anim_id, ENTRANCES["slide-down"])
             p = prog(el, dur)
@@ -528,16 +568,17 @@ def main():
                     ty = kf(p, props["ty"], timing) * S
                 if "s" in props:
                     sc = kf(p, props["s"], timing)
-                if "rx" in props:                      # rotateX: foreshortened height
-                    sy = max(0.02, math.cos(math.radians(kf(p, props["rx"], timing))))
+                if "rx" in props:                      # perspective(600px) rotateX(..)
+                    rx = kf(p, props["rx"], timing)
                 if "br" in props:
                     br = max(0.0, kf(p, props["br"], timing))
+        hold_end = tm["hold_end"]
         if exit_ms and el > hold_end:                  # kf_out: fade up + shrink
             q = prog(el, exit_ms, hold_end)
             op *= kf(q, [(0, 1.0), (1, 0.0)], EASE_IN)
             ty += kf(q, [(0, 0.0), (1, -22.0)], EASE_IN) * S
             sc *= kf(q, [(0, 1.0), (1, 0.98)], EASE_IN)
-        return max(0.0, min(1.0, op)), tx, ty, sc, sy, br
+        return max(0.0, min(1.0, op)), tx, ty, sc, rx, br
 
     # --- card outer glow: CSS box-shadow (theme glow, or the rare trglow pulse) ---
     def card_shadow(cr, color, alpha, blur_css):
@@ -1043,23 +1084,43 @@ def main():
         cr.restore()
 
     STAMP_T = _bezier(.2, 1.5, .45, 1)
+    stamp_on = "stamp" in fxset
+
+    def icon_state(el):
+        """(scale, opacity) of .icwrap — CSS icstamp .55s cubic-bezier(.2,1.5,.45,1)
+        .08s both: 0% opacity 0 scale .4 ; 60% scale 1.12 ; 100% opacity 1 scale 1."""
+        if not stamp_on:
+            return 1.0, 1.0
+        p = prog(el, 550, 80)
+        if p >= 1.0:
+            return 1.0, 1.0
+        return (kf(p, [(0, 0.4), (0.6, 1.12), (1, 1.0)], STAMP_T),
+                max(0.0, min(1.0, kf(p, [(0, 0.0), (1, 1.0)], STAMP_T))))
 
     def icon_scale(el):
-        # CSS icstamp .55s cubic-bezier(.2,1.5,.45,1) .08s both: scale .4 -> 1.12 (60%)
-        # -> 1. (The baked card already holds the icon, so only the >= 1 part shows.)
-        if "stamp" not in fxset:
-            return 1.0
-        p = prog(el, 550, 80)
-        return kf(p, [(0, 0.4), (0.6, 1.12), (1, 1.0)], STAMP_T)
+        return icon_state(el)[0]
+
+    def stamp_active(el):
+        """True while the icon is mid-pop and we can draw it from its own layer."""
+        return stamp_on and icon_layer is not None and prog(el, 550, 80) < 1.0
 
     def fx_stamp(el, cr):
-        if icon_surf is None:
-            return
-        sc = icon_scale(el)
-        if abs(sc - 1.0) < 0.003 or sc < 1.0:
-            return
         ix, iy, isz = icon_box
         cx, cy = ix + isz / 2.0, iy + isz / 2.0
+        sc, op = icon_state(el)
+        if icon_layer is not None:                    # faithful: icon grows in from .4x
+            if not stamp_active(el) or op <= 0.003:
+                return
+            cr.save()
+            cr.translate(cx, cy)
+            cr.scale(sc, sc)
+            cr.translate(-cx, -cy)
+            cr.set_source_surface(icon_layer, 0, 0)
+            cr.paint_with_alpha(op)
+            cr.restore()
+            return
+        if icon_surf is None or sc <= 1.003:          # fallback: only the overshoot bump
+            return
         cr.save()
         cr.translate(cx, cy)
         cr.scale(sc, sc)
@@ -1080,7 +1141,7 @@ def main():
         if p <= 0.0 or p >= 1.0:
             return
         op = kf(p, [(0, 0.7), (1, 0.0)], SHOCK_T)
-        sc = kf(p, [(0, 1.0), (1, 1.8)], SHOCK_T) * max(1.0, icon_scale(el))
+        sc = kf(p, [(0, 1.0), (1, 1.8)], SHOCK_T) * icon_scale(el)   # child of .icwrap
         cx, cy = ix + isz / 2.0, iy + isz / 2.0
         cr.save()
         cr.translate(cx, cy)
@@ -1197,14 +1258,15 @@ def main():
     def draw_card(cr, el):
         """Card + every effect at time el, in the CSS paint order."""
         fx_card_glow(el, cr)                          # .card box-shadow (outside)
-        cr.set_source_surface(card0, 0, 0)
+        popping = stamp_active(el)
+        cr.set_source_surface(card_noicon if popping else card0, 0, 0)
         cr.paint()
         if "accentbar" in fxset:                      # .card::before (z auto)
             if ambient in ("flow", "flow-pulse"):
                 fx_bar(el, cr, "flow")
             if ambient in ("pulse", "flow-pulse"):
                 fx_bar(el, cr, "pulse")
-                if icon_surf is not None:             # the icon paints above the glow
+                if icon_surf is not None and not popping:   # the icon paints above the glow
                     ix, iy, _isz = icon_box
                     cr.set_source_surface(icon_surf, ix, iy)
                     cr.paint()
@@ -1250,42 +1312,71 @@ def main():
         render_at(cr, (time.monotonic() - anim["start"]) * 1000.0, pos_x, pos_y)
         return False
 
-    GROUP_M = 110.0                                   # room for outer glows
+    GROUP_M = max(110.0, 90.0 * S)                    # room for outer glows
 
     def render_at(cr, el, ox, oy):
         """Draw the card + every effect at time el (ms), card top-left at (ox, oy).
         Shared by the live window and the --dump-dir harness, so a dumped frame is
         exactly what shows over the game. Card and effects form ONE group that takes
         the entrance/exit transform + opacity, like the CSS .card subtree."""
-        op, tx, ty, sc, sy, br = card_state(el)
+        op, tx, ty, sc, rx, br = card_state(el)
         if op <= 0.0:
             return
         cr.set_operator(cairo.OPERATOR_OVER)
         cr.save()
         cr.translate(ox + tx, oy + ty)
-        if sc != 1.0 or sy != 1.0:                    # scale around the card centre
-            lcx, lcy = card_w / 2.0, card_h / 2.0
+        lcx, lcy = card_w / 2.0, card_h / 2.0
+        if sc != 1.0:                                 # scale around the card centre
             cr.translate(lcx, lcy)
-            cr.scale(sc, sc * sy)
+            cr.scale(sc, sc)
             cr.translate(-lcx, -lcy)
         cr.rectangle(-GROUP_M, -GROUP_M, card_w + 2 * GROUP_M, card_h + 2 * GROUP_M)
         cr.clip()
         cr.push_group()
         draw_card(cr, el)
         grp = cr.pop_group()
-        cr.set_source(grp)
-        cr.paint_with_alpha(op * card_opacity)
+
+        def paint_group(alpha, operator):
+            cr.set_operator(operator)
+            if abs(rx) < 0.05:
+                cr.set_source(grp)
+                cr.paint_with_alpha(alpha)
+                return
+            # CSS perspective(600px) rotateX(rx) about the card centre: a row at
+            # height y moves to y*cos / (1 - y*sin/d) and widens by 1 / (1 - y*sin/d).
+            # Paint the group in thin horizontal bands, each with its own scale, which
+            # reproduces the trapezoid (true perspective, not a flat squash).
+            a = math.radians(rx)
+            co, si = math.cos(a), math.sin(a)
+            d = 600.0 * S
+            band = 2.0
+            y = -GROUP_M
+            while y < card_h + GROUP_M:
+                yc = y + band / 2.0 - lcy
+                den = 1.0 - (yc * si) / d
+                if den > 0.05:
+                    k = 1.0 / den
+                    cr.save()
+                    cr.translate(lcx, lcy + yc * co * k)
+                    cr.scale(k, max(0.001, co * k))
+                    cr.translate(-lcx, -(lcy + yc))
+                    cr.rectangle(-GROUP_M, y - 0.6, card_w + 2 * GROUP_M, band + 1.2)
+                    cr.clip()
+                    cr.set_source(grp)
+                    cr.paint_with_alpha(alpha)
+                    cr.restore()
+                y += band
+
+        paint_group(op * card_opacity, cairo.OPERATOR_OVER)
         if br > 0.002:                                # glow-in: CSS brightness(1 + br)
-            cr.set_operator(cairo.OPERATOR_ADD)
-            cr.set_source(grp)
-            cr.paint_with_alpha(min(1.0, op * card_opacity * br))
-            cr.set_operator(cairo.OPERATOR_OVER)
+            paint_group(min(1.0, op * card_opacity * br), cairo.OPERATOR_ADD)
+        cr.set_operator(cairo.OPERATOR_OVER)
         cr.restore()
 
     # Test harness: render frames at the given times through the SAME render_at the
     # live window uses, write them as PNGs and exit without ever showing a window.
     if args.dump_dir:
-        margin_px = 110
+        margin_px = int(GROUP_M)
         times = [float(t) for t in (args.dump_times or "300,800,1500").split(",") if t.strip()]
         os.makedirs(args.dump_dir, exist_ok=True)
         for t in times:
@@ -1328,8 +1419,24 @@ def main():
         return True
 
     def finish():
-        win.destroy()
+        if not tm["done"]:
+            tm["done"] = True
+            win.destroy()
         return False
+
+    def dismiss_now():
+        # SIGUSR1 from the backend: more toasts are queued -> start the exit animation
+        # right away instead of sitting out the full duration.
+        el = (time.monotonic() - anim["start"]) * 1000.0
+        if el < tm["hold_end"]:
+            tm["hold_end"] = el
+            GLib.timeout_add(int(exit_ms) + 80, finish)
+        return True
+
+    try:
+        GLib.unix_signal_add(GLib.PRIORITY_DEFAULT, signal.SIGUSR1, dismiss_now)
+    except Exception:  # noqa: BLE001  pylint: disable=broad-except
+        pass
 
     GLib.timeout_add(33, redraw)                 # ~30fps: keep presenting frames
     GLib.timeout_add(max(300, args.dur_ms), finish)
@@ -1341,5 +1448,8 @@ def main():
 if __name__ == "__main__":
     try:
         main()
+    except SystemExit:
+        raise
     except Exception:  # noqa: BLE001  pylint: disable=broad-except
         log("FATAL\n" + traceback.format_exc())
+        sys.exit(1)

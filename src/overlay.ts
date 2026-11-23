@@ -13,10 +13,43 @@
 import { call } from '@decky/api';
 
 import { ensureFont, iconDataUri } from './offline';
+import { getSettings } from './settings';
 import { defaultAmbient, defaultFx, getFont, getTheme, resolveAccent, resolveFontStack, resolveFxColor } from './themes';
 import { ToastData, ToastOptions, renderCaptureParts } from './toastWindow';
 
-const RENDER_SCALE = 2;        // rasterization oversampling (crisp when enlarged)
+// Rasterization oversampling (crisp when enlarged): 2x on the Deck's own screen, 3x
+// when the output is big (dock / TV) and the card gets scaled up by the helper.
+let renderScale = 2;
+let displayK = 1;              // real output size relative to 1280x800
+
+/** Read the real output resolution (cheap; called at load and when a game starts). */
+export async function refreshDisplay(): Promise<void> {
+  try {
+    const d: any = await call('display_info');
+    if (d && d.w > 0 && d.h > 0) {
+      displayK = Math.min(d.w / 1280, d.h / 800);
+      renderScale = displayK > 1.6 ? 3 : 2;
+    }
+  } catch { /* keep defaults */ }
+}
+
+// Overlay health: Steam's own achievement toast is only hidden while our overlay can
+// actually show (helper present + GTK usable + last toast came up), so an unlock is
+// never left with no notification at all.
+let overlayHealthy = true;
+export function isOverlayHealthy(): boolean {
+  return overlayHealthy;
+}
+export async function checkOverlay(): Promise<boolean> {
+  try {
+    const r: any = await call('overlay_check');
+    overlayHealthy = !!(r && r.ok);
+    if (!overlayHealthy) console.warn('[trophy-toasts] overlay unavailable:', r && r.error);
+  } catch {
+    overlayHealthy = false;
+  }
+  return overlayHealthy;
+}
 
 // The card PNG carries the FULL effect config to the helper in a few extra bottom
 // rows, so the helper can animate exactly the effects you selected (any of them),
@@ -51,6 +84,7 @@ function hexRgb(hex: string): [number, number, number] {
 /** Paint the full effect-config flags into the card PNG's extra bottom rows. */
 function encodeFlags(
   ctx: CanvasRenderingContext2D, cw: number, ch: number, opts: ToastOptions, icon: IconBox,
+  layers: boolean, scale: number,
 ): void {
   // Resolve exactly like the CSS does (buildParts): '' ambient = the theme's default
   // ambient, missing fx = the theme defaults. Encoding the raw '' made the overlay
@@ -94,6 +128,8 @@ function encodeFlags(
     gr, gg, gb, Math.round(ga * 100),                        // 34..37: theme glow rgb + alpha%
     opts.layout === 'centered' ? 1 : 0,                      // 38: accent bar on TOP (no comet)
     opts.rare ? 1 : 0,                                       // 39: rare (shimmer + glow pulse)
+    layers ? 1 : 0,                                          // 40: sheet = card / no-icon / icon
+    scale,                                                   // 41: render scale (sheet px per CSS px)
   ];
   nums.forEach((val, j) => {
     ctx.fillStyle = `rgb(${clamp(val)},0,0)`;
@@ -101,10 +137,11 @@ function encodeFlags(
   });
 }
 
-// Over-game card size: enlarge the design, capped to a fraction of the screen.
+// Over-game card size on a 1280x800 screen: CSS px * BASE_SCALE * the user's size %.
+// (The helper then scales by the real output resolution and makes sure it fits.)
 const SCREEN_W = 1280;
-const SIZE_SCALE = 1.45;
-const MAX_FRACTION = 0.5;
+const BASE_SCALE = 1.356;   // a 500px-wide toast (472px card) shows 640px wide
+const MAX_FRACTION = 0.94;
 
 let rendering = false;         // guard: renders are heavy; never run two at once
 
@@ -209,26 +246,42 @@ async function renderCardInner(data: ToastData, opts: ToastOptions): Promise<Car
     // (its child) — so set the family on the SVG root here or the chosen font never
     // reaches the text. Single-quote the family names to stay valid in the attr.
     const fontStack = resolveFontStack(getTheme(opts.themeId), opts.font).replace(/"/g, "'");
+    // With the icon "pop" (stamp) on, render THREE stacked variants in one pass: the
+    // full card, the card without its icon, and the icon alone on transparent. The
+    // helper then animates the icon exactly like the CSS (grow in from 0.4x + fade).
+    const fxOn = Array.isArray(opts.fx) ? opts.fx : defaultFx(getTheme(opts.themeId).id, !!opts.rare);
+    const layers = fxOn.includes('stamp') && iconBox.sz > 0;
+    const variantCss = layers
+      ? '.v-noicon .icwrap{visibility:hidden!important;}' +
+        '.v-icon .card{background:transparent!important;box-shadow:none!important;-webkit-backdrop-filter:none!important;backdrop-filter:none!important;}' +
+        '.v-icon .card::before,.v-icon .card::after{display:none!important;}' +
+        '.v-icon .card>*:not(.icwrap){visibility:hidden!important;}'
+      : '';
+    const variant = (cls: string, y: number) =>
+      `<foreignObject x="0" y="${y}" width="${w}" height="${h}">` +
+      `<div xmlns="http://www.w3.org/1999/xhtml" class="${cls}" style="width:${w}px;height:${h}px;font-family:${fontStack};">${inner}</div>` +
+      `</foreignObject>`;
+    const count = layers ? 3 : 1;
     const svg =
-      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}">` +
-      `<foreignObject x="0" y="0" width="${w}" height="${h}">` +
-      `<div xmlns="http://www.w3.org/1999/xhtml" style="width:${w}px;height:${h}px;font-family:${fontStack};">` +
-      `<style xmlns="http://www.w3.org/1999/xhtml">${fontBlock}${style}</style>${inner}</div>` +
-      `</foreignObject></svg>`;
+      `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h * count}">` +
+      `<style xmlns="http://www.w3.org/1999/xhtml">${fontBlock}${style}${variantCss}</style>` +
+      variant('v-full', 0) + (layers ? variant('v-noicon', h) + variant('v-icon', h * 2) : '') +
+      `</svg>`;
 
     const img = await svgToImage(svg);
-    const cw = Math.round(w * RENDER_SCALE);
-    const ch = Math.round(h * RENDER_SCALE);
+    const scale = renderScale;
+    const cw = Math.round(w * scale);
+    const ch = Math.round(h * scale);
     const canvas = document.createElement('canvas');
     canvas.width = cw;
-    canvas.height = ch + FLAG_ROWS;   // extra rows carry the effect config to the helper
+    canvas.height = ch * count + FLAG_ROWS;   // extra rows carry the effect config to the helper
     const ctx = canvas.getContext('2d');
     if (!ctx) return null;
     ctx.save();
-    ctx.scale(RENDER_SCALE, RENDER_SCALE);
+    ctx.scale(scale, scale);
     ctx.drawImage(img, 0, 0);
     ctx.restore();
-    encodeFlags(ctx, cw, ch, opts, iconBox);
+    encodeFlags(ctx, cw, ch * count, opts, iconBox, layers, scale);
     return { png: canvas.toDataURL('image/png'), w, h };
   } catch (e) {
     console.error('[trophy-toasts] renderCard failed', e);
@@ -247,18 +300,20 @@ function animFor(animId: string): 'slide' | 'fade' {
   return animId === 'fade' || animId === 'glow-in' ? 'fade' : 'slide';
 }
 
-function displaySize(w: number, h: number): { w: number; h: number } {
-  const dispW = Math.min(Math.round(w * SIZE_SCALE), Math.round(SCREEN_W * MAX_FRACTION));
+function displaySize(w: number, h: number, scalePct?: number): { w: number; h: number } {
+  const pct = Math.max(40, Math.min(250, typeof scalePct === 'number' ? scalePct : 100)) / 100;
+  const dispW = Math.min(Math.round(w * BASE_SCALE * pct), Math.round(SCREEN_W * MAX_FRACTION));
   const s = dispW / w;
   return { w: dispW, h: Math.round(h * s) };
 }
 
 async function pushOverlay(card: Card, opts: ToastOptions): Promise<boolean> {
   const anchor = ANCHORS.has(opts.position) ? opts.position : 'top-center';
-  const size = displaySize(card.w, card.h);
+  const size = displaySize(card.w, card.h, opts.overlayScale);
   const res: any = await call(
     'show_overlay', card.png, anchor, 28,
     size.w, size.h, Math.max(2000, opts.durationMs), animFor(opts.animId),
+    opts.autoDisplayScale !== false,
   );
   if (res && res.ok === false) {
     console.error('[trophy-toasts] show_overlay backend error', res.error);
@@ -267,24 +322,24 @@ async function pushOverlay(card: Card, opts: ToastOptions): Promise<boolean> {
   return true;
 }
 
-/** Render + display one toast over the game. Returns false if unavailable. */
-export async function showOverlay(data: ToastData, opts: ToastOptions): Promise<boolean> {
-  const card = await renderCard(data, opts);
-  if (!card) return false;
-  try {
-    if (!(await pushOverlay(card, opts))) return false;
-    try { opts.onShow?.(); } catch { /* ignore */ }
-    return true;
-  } catch (e) {
-    console.error('[trophy-toasts] show_overlay call failed', e);
-    return false;
-  }
-}
-
 // --- Queue: multiple unlocks show one after another, in order ---------------
 interface QueueItem { data: ToastData; opts: ToastOptions; onFail?: () => void; }
 const queue: QueueItem[] = [];
 let processing = false;
+// The toast on screen right now: when it came up and when it should leave.
+let current: { shownAt: number; endAt: number } | null = null;
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+const EXIT_MS = 340;           // the helper's exit animation (CSS kf_out)
+
+/** With more unlocks waiting, cut the on-screen toast down to the user's
+ *  "seconds per toast in a queue" (never below what it has already shown). */
+function shortenForQueue(): void {
+  const c = current;
+  const secs = getSettings().queueSeconds;
+  if (!c || !queue.length || !(secs > 0)) return;
+  const end = Math.max(c.shownAt + secs * 1000, Date.now() + 150);
+  if (end < c.endAt) c.endAt = end;
+}
 
 async function processQueue(): Promise<void> {
   if (processing) return;
@@ -298,13 +353,40 @@ async function processQueue(): Promise<void> {
         if (card && (await pushOverlay(card, item.opts))) {
           shown = true;
           try { item.opts.onShow?.(); } catch { /* ignore */ }
-          // Wait for this toast to finish (duration + a small gap) before the next.
-          const hold = Math.max(2000, item.opts.durationMs) + 450;
-          await new Promise((r) => setTimeout(r, hold));
+          const natural = Date.now() + Math.max(2000, item.opts.durationMs);
+          current = { shownAt: Date.now(), endAt: natural };
+          shortenForQueue();
+          let checked = false;
+          while (current && Date.now() < current.endAt) {
+            await sleep(100);
+            // A helper that died right after launch never showed anything.
+            if (!checked && Date.now() - current.shownAt > 900) {
+              checked = true;
+              let alive = true;
+              try { alive = !!((await call('overlay_alive')) as any)?.alive; } catch { /* assume ok */ }
+              if (!alive) { shown = false; break; }
+            }
+          }
+          if (shown) {
+            overlayHealthy = true;
+            if (current && current.endAt < natural - 300) {
+              // leaving early: ask the helper to play its exit animation now
+              try { await call('dismiss_overlay'); } catch { /* ignore */ }
+              await sleep(EXIT_MS + 110);
+            } else {
+              await sleep(450);
+            }
+          } else {
+            overlayHealthy = false;
+          }
+          current = null;
+        } else if (card) {
+          overlayHealthy = false;
         }
       } catch (e) {
         console.error('[trophy-toasts] queued toast failed', e);
       }
+      current = null;
       if (!shown) { try { item.onFail?.(); } catch { /* ignore */ } }
     }
   } finally {
@@ -316,7 +398,13 @@ async function processQueue(): Promise<void> {
  *  `onFail` runs for an item the overlay couldn't show (e.g. helper unavailable). */
 export function enqueueOverlay(data: ToastData, opts: ToastOptions, onFail?: () => void): void {
   queue.push({ data, opts, onFail });
+  shortenForQueue();
   void processQueue();
+}
+
+/** Drop everything still waiting (plugin unload). */
+export function clearOverlayQueue(): void {
+  queue.length = 0;
 }
 
 /** Stop the current over-game overlay. */
@@ -324,13 +412,12 @@ export async function hideOverlay(): Promise<void> {
   try { await call('hide_overlay'); } catch { /* ignore */ }
 }
 
-/** Diagnostic: render + push a sample card, reporting each stage. */
 /** Test harness: the exact card PNG (with flag rows) and helper launch size that a
  *  real unlock would send over the game — WITHOUT showing anything. */
 export async function renderCardDebug(data: ToastData, opts: ToastOptions): Promise<any> {
   const card = await renderCard(data, opts);
   if (!card) return null;
-  const size = displaySize(card.w, card.h);
+  const size = displaySize(card.w, card.h, opts.overlayScale);
   return { png: card.png, w: size.w, h: size.h, anim: animFor(opts.animId), dur: Math.max(2000, opts.durationMs) };
 }
 
@@ -340,7 +427,7 @@ export async function overlayDebug(data: ToastData, opts: ToastOptions): Promise
     out.stage = 'render';
     const card = await renderCard(data, opts);
     if (!card) { out.ok = false; out.stage = 'render-null'; return out; }
-    const size = displaySize(card.w, card.h);
+    const size = displaySize(card.w, card.h, opts.overlayScale);
     out.natural = `${card.w}x${card.h}`;
     out.display = `${size.w}x${size.h}`;
     out.pngLen = card.png.length;

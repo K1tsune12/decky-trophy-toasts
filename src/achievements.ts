@@ -10,7 +10,7 @@
 
 import { t } from './i18n';
 import { ensureFont, fetchWithTimeout, prewarmIcons, rarityFromDisk, rarityToDisk } from './offline';
-import { enqueueOverlay, overlayDebug, renderCardDebug } from './overlay';
+import { checkOverlay, clearOverlayQueue, enqueueOverlay, isOverlayHealthy, overlayDebug, refreshDisplay, renderCardDebug } from './overlay';
 import { buildOpts, resolveLook } from './presets';
 import { AchSettings, getSettings } from './settings';
 import { SoundPlayer } from './sound';
@@ -45,7 +45,7 @@ function fmtPct(pct: number): string {
   return pct < 0.1 ? '<0.1' : pct.toFixed(1);
 }
 
-interface Resolved { strID?: string; name: string; icon?: string; flAchieved?: number }
+interface Resolved { strID?: string; name: string; icon?: string; flAchieved?: number; desc?: string }
 
 export class AchievementWatcher {
   private reg?: { unregister: () => void };
@@ -94,6 +94,8 @@ export class AchievementWatcher {
     } catch { /* optional */ }
 
     this.installSuppression();
+    void checkOverlay();     // can the over-game helper run here at all?
+    void refreshDisplay();   // real output resolution (dock / TV)
     // Cross-plugin flag so Decky Sound Toasts skips achievements while we run.
     // `simulate` doubles as the Preview buttons' action and a safe external hook.
     w.__kitsuneAchievementToasts = {
@@ -113,7 +115,7 @@ export class AchievementWatcher {
         const s = getSettings();
         const pct = rare ? 2.3 : 47.5;
         const name = rare ? t('toast.sampleRare') : t('toast.sampleCommon');
-        const data = this.toData(name, undefined, pct);
+        const data = this.toData(name, undefined, pct, rare ? t('toast.sampleDescRare') : t('toast.sampleDescCommon'));
         const o: ToastOptions = { ...this.opts(!!rare, s), ...(style || {}) };
         delete (o as any).onShow;
         await ensureFont(o.font);
@@ -126,6 +128,7 @@ export class AchievementWatcher {
   /** Warm everything an unlock in this game will need. */
   private onGameStart(appid: number): void {
     this.currentAppId = appid;
+    void refreshDisplay();   // the output may have changed (docked / undocked)
     void this.ensurePct(appid);
     this.preloadGameSounds(appid);
     try {
@@ -217,7 +220,7 @@ export class AchievementWatcher {
           try {
             const s = getSettings();
             const notif = args.find((a) => a && typeof a === 'object' && 'eType' in a);
-            if (live && s.enabled && s.suppressNative && notif?.eType === ACHIEVEMENT_ETYPE) return false;
+            if (live && s.enabled && s.suppressNative && isOverlayHealthy() && notif?.eType === ACHIEVEMENT_ETYPE) return false;
           } catch { /* ignore */ }
           return orig.apply(this, args);
         };
@@ -236,7 +239,7 @@ export class AchievementWatcher {
         const patched = function (this: any, ...args: any[]) {
           try {
             const s = getSettings();
-            if (live && s.enabled && s.suppressNative && args?.[0]?.eType === ACHIEVEMENT_ETYPE) return;
+            if (live && s.enabled && s.suppressNative && isOverlayHealthy() && args?.[0]?.eType === ACHIEVEMENT_ETYPE) return;
           } catch { /* ignore */ }
           return orig.apply(this, args);
         };
@@ -255,6 +258,7 @@ export class AchievementWatcher {
     if (!appid) return;
 
     const ach = await this.resolveAchievement(appid, p);
+    if (s.showDescription && !ach.desc && ach.strID) ach.desc = await this.lookupDescription(appid, ach.strID);
 
     // rarity: Web API / disk cache / Steam client map, else the event's own value
     let pct: number | undefined;
@@ -265,36 +269,55 @@ export class AchievementWatcher {
     const rare = typeof pct === 'number' && isFinite(pct) ? pct < s.rareThreshold : false;
     if (!rare && !s.showForCommon) return;
 
-    const data = this.toData(ach.name, ach.icon, pct);
+    const data = this.toData(ach.name, ach.icon, pct, ach.desc);
     const opts = this.opts(rare, s, appid);
     // Queue for the over-game overlay (composites above the running game); multiple
-    // unlocks play one at a time, in order. Falls back to our popup window per item.
-    enqueueOverlay(data, opts, () => { void ensureFont(opts.font).then(() => this.toast.show(data, opts)); });
+    // unlocks play one at a time, in order. If the overlay can't show it, fall back to
+    // our popup window — unless Steam's own toast was left on for this unlock (overlay
+    // already known to be down), which would double it.
+    const nativeHidden = s.suppressNative && isOverlayHealthy();
+    enqueueOverlay(data, opts, () => {
+      if (nativeHidden) void ensureFont(opts.font).then(() => this.toast.show(data, opts));
+    });
+  }
+
+  /** The achievement's description from the Steam client (hidden ones may be empty). */
+  private async lookupDescription(appid: number, strID: string): Promise<string | undefined> {
+    try {
+      const res = await w.SteamClient?.Apps?.GetMyAchievementsForApp?.(String(appid));
+      const hit = extractAchievements(res).find((a) => a?.strID === strID);
+      const d = hit && typeof hit.strDescription === 'string' ? hit.strDescription.trim() : '';
+      return d || undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async resolveAchievement(appid: number, p: any): Promise<Resolved> {
     const pName = p?.strName || p?.strDisplayName || p?.display_name;
     const pImg = p?.strImage || p?.strIcon || p?.icon;
     const pID = p?.strID || p?.achievement_id || p?.strAchievementID || p?.strApiName;
-    if (pName) return { strID: pID, name: pName, icon: pImg, flAchieved: p?.flAchieved };
+    const pDesc = p?.strDescription || p?.description;
+    if (pName) return { strID: pID, name: pName, icon: pImg, flAchieved: p?.flAchieved, desc: pDesc };
 
     try {
       const res = await w.SteamClient?.Apps?.GetMyAchievementsForApp?.(String(appid));
       const list = extractAchievements(res).filter((a) => a?.bAchieved);
       const ach = (pID && list.find((a) => a.strID === pID)) ||
         list.slice().sort((a, b) => (b.rtUnlocked || 0) - (a.rtUnlocked || 0))[0];
-      if (ach) return { strID: ach.strID, name: ach.strName, icon: ach.strImage, flAchieved: ach.flAchieved };
+      if (ach) return { strID: ach.strID, name: ach.strName, icon: ach.strImage, flAchieved: ach.flAchieved, desc: ach.strDescription };
     } catch (e) {
       console.error('[achievement-toasts] resolveAchievement failed', e);
     }
     return { strID: pID, name: pName || t('toast.unlocked'), icon: pImg, flAchieved: p?.flAchieved };
   }
 
-  private toData(name: string, icon: string | undefined, pct: number | undefined): ToastData {
+  private toData(name: string, icon: string | undefined, pct: number | undefined, description?: string): ToastData {
     return {
       name,
       icon,
       pct,
+      description: description || undefined,
       rarityText: typeof pct === 'number' && isFinite(pct) ? t('toast.rarity', { pct: fmtPct(pct) }) : undefined,
     };
   }
@@ -333,7 +356,7 @@ export class AchievementWatcher {
     const s = getSettings();
     const pct = rare ? 2.3 : 47.5;
     const name = rare ? t('toast.sampleRare') : t('toast.sampleCommon');
-    const data = this.toData(name, undefined, pct);
+    const data = this.toData(name, undefined, pct, rare ? t('toast.sampleDescRare') : t('toast.sampleDescCommon'));
     // Use the running game's profile (if any) so per-game looks/sounds can be tested.
     const opts = this.opts(rare, s, this.currentAppId || undefined);
     enqueueOverlay(data, opts, () => { void ensureFont(opts.font).then(() => this.toast.show(data, opts)); });
@@ -366,6 +389,7 @@ export class AchievementWatcher {
   }
 
   deinit(): void {
+    clearOverlayQueue();
     try { this.reg?.unregister?.(); } catch { /* ignore */ }
     try { this.appReg?.unregister?.(); } catch { /* ignore */ }
     this.reg = undefined;

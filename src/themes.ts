@@ -183,7 +183,7 @@ export interface LayoutDef {
 export const LAYOUTS: LayoutDef[] = [
   { id: 'standard', name: 'Standard (icon left)' },
   { id: 'compact', name: 'Compact' },
-  { id: 'centered', name: 'Centered (icon top)' },
+  { id: 'centered', name: 'Centered (icon on top)' },
   { id: 'banner', name: 'Banner (large)' },
 ];
 
