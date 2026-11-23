@@ -260,6 +260,7 @@ export const EFFECTS: EffectDef[] = [
   { id: 'glint', name: 'Diagonal shine', group: 'flair' },
   { id: 'shockwave', name: 'Ring around icon', group: 'flair' },
   { id: 'flash', name: 'Entrance flash', group: 'flair' },
+  { id: 'blooddrip', name: 'Blood drip', group: 'flair' },
 ];
 
 /** Effect groups that allow only a single selection at a time. */

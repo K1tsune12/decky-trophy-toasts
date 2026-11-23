@@ -56,6 +56,31 @@ const CURATED: Preset[] = [
     common: tier('arcade-neon', 'pop', 'hue', ['accentbar', 'stamp', 'comet', 'border'], '', 'orbitron', 'cyan'),
     rare: tier('arcade-neon', 'glow-in', 'hue', ['accentbar', 'stamp', 'shockwave', 'flash', 'sparkles', 'edgerainbow'], '', 'orbitron', 'cyan'),
   },
+  {
+    id: 'vampyr', name: 'Vampyr', builtin: true,
+    common: tier('crimson', 'fade', 'pulse', ['accentbar', 'stamp', 'comet', 'edgepulse'], 'red', 'cinzel', 'red'),
+    rare: tier('crimson', 'glow-in', 'pulse', ['accentbar', 'stamp', 'shockwave', 'comet', 'glint', 'flash', 'glowline', 'stars'], 'red', 'cinzel', 'red'),
+  },
+  {
+    id: 'halloween', name: 'Halloween', builtin: true,
+    common: tier('crimson', 'bounce', 'pulse', ['accentbar', 'stamp', 'comet', 'blooddrip'], 'amber', 'cinzel', 'amber'),
+    rare: tier('crimson', 'glow-in', 'flow-pulse', ['accentbar', 'stamp', 'shockwave', 'comet', 'flash', 'confetti', 'edgepulse'], 'amber', 'cinzel', 'amber'),
+  },
+  {
+    id: 'ghost', name: 'Ghost', builtin: true,
+    common: tier('kitsune-glass', 'fade', 'breathe', ['accentbar', 'stamp', 'glint'], 'white', '', 'white'),
+    rare: tier('frost', 'glow-in', 'breathe', ['accentbar', 'stamp', 'glint', 'sparkles', 'edgepulse'], 'white', '', 'white'),
+  },
+  {
+    id: 'toxic', name: 'Toxic', builtin: true,
+    common: tier('emerald', 'pop', 'pulse', ['accentbar', 'stamp', 'comet', 'sparkles'], 'green', '', 'green'),
+    rare: tier('emerald', 'glow-in', 'flow-pulse', ['accentbar', 'stamp', 'shockwave', 'glint', 'flash', 'sparkles', 'glowline'], 'green', '', 'green'),
+  },
+  {
+    id: 'frostbite', name: 'Frostbite', builtin: true,
+    common: tier('frost', 'slide-down', 'breathe', ['accentbar', 'stamp', 'glint', 'sparkles'], 'cyan', '', 'cyan'),
+    rare: tier('frost', 'glow-in', 'pulse', ['accentbar', 'stamp', 'shockwave', 'glint', 'flash', 'sparkles', 'edgepulse'], 'cyan', '', 'cyan'),
+  },
 ];
 
 /** A tasteful font pairing for a theme's generated preset ('' = theme default). */

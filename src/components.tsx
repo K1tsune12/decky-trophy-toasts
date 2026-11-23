@@ -97,7 +97,7 @@ export function LookEditor({
       />
       <Dropdown
         label={t('look.effect')} disabled={dis} value={settings[animKey]}
-        options={ANIMATIONS.map((a) => ({ data: a.id, label: a.name }))}
+        options={ANIMATIONS.map((a) => ({ data: a.id, label: t(`anim.${a.id}` as any) }))}
         onChange={(v) => onChange(saveSettings({ [animKey]: v } as Partial<AchSettings>))}
       />
       <Dropdown
@@ -107,17 +107,17 @@ export function LookEditor({
       />
       <Dropdown
         label={t('look.ambient')} disabled={dis} value={settings[ambientKey]}
-        options={[{ data: '', label: t('accent.default') }, ...AMBIENTS.map((a) => ({ data: a.id, label: a.name }))]}
+        options={[{ data: '', label: t('accent.default') }, ...AMBIENTS.map((a) => ({ data: a.id, label: t(`amb.${a.id}` as any) }))]}
         onChange={(v) => onChange(saveSettings({ [ambientKey]: v } as Partial<AchSettings>))}
       />
       <Dropdown
         label={t('look.outline')} disabled={dis} value={groupChoice(fx, 'outline')}
-        options={[{ data: '', label: t('fx.none') }, ...effectsInGroup('outline').map((e) => ({ data: e.id, label: e.name }))]}
+        options={[{ data: '', label: t('fx.none') }, ...effectsInGroup('outline').map((e) => ({ data: e.id, label: t(`fx.${e.id}` as any) }))]}
         onChange={(v) => setGroup('outline', v)}
       />
       <Dropdown
         label={t('look.particles')} disabled={dis} value={groupChoice(fx, 'particles')}
-        options={[{ data: '', label: t('fx.none') }, ...effectsInGroup('particles').map((e) => ({ data: e.id, label: e.name }))]}
+        options={[{ data: '', label: t('fx.none') }, ...effectsInGroup('particles').map((e) => ({ data: e.id, label: t(`fx.${e.id}` as any) }))]}
         onChange={(v) => setGroup('particles', v)}
       />
       <Dropdown
@@ -130,7 +130,7 @@ export function LookEditor({
       </PanelSectionRow>
       {effectsInGroup('flair').map((e) => (
         <PanelSectionRow key={e.id}>
-          <ToggleField label={e.name} disabled={dis} checked={fx.includes(e.id)} onChange={(v) => toggleFlair(e.id, v)} />
+          <ToggleField label={t(`fx.${e.id}` as any)} disabled={dis} checked={fx.includes(e.id)} onChange={(v) => toggleFlair(e.id, v)} />
         </PanelSectionRow>
       ))}
     </>

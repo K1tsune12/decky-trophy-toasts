@@ -26,7 +26,7 @@ const FLAG_BLOCK = 6;
 const FX_IDS = [
   'border', 'glowline', 'edgepulse', 'edgerainbow',       // outline
   'sparkles', 'stars', 'confetti',                        // particles
-  'accentbar', 'comet', 'stamp', 'glint', 'shockwave', 'flash', // flair
+  'accentbar', 'comet', 'stamp', 'glint', 'shockwave', 'flash', 'blooddrip', // flair
 ];
 const AMB_IDS = ['flow', 'hue', 'pulse', 'flow-pulse', 'breathe'];
 // Entrance animations, in the exact order of ANIMATIONS in themes.ts. The chosen

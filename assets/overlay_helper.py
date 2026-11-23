@@ -40,7 +40,7 @@ FLAG_ROWS = 4
 FLAG_BLOCK = 6
 FX_IDS = ["border", "glowline", "edgepulse", "edgerainbow",
           "sparkles", "stars", "confetti",
-          "accentbar", "comet", "stamp", "glint", "shockwave", "flash"]
+          "accentbar", "comet", "stamp", "glint", "shockwave", "flash", "blooddrip"]
 AMB_IDS = ["flow", "hue", "pulse", "flow-pulse", "breathe"]
 # Entrance animations, same order as ANIMATIONS in themes.ts / ANIM_IDS in overlay.ts.
 ANIM_IDS = ["slide-down", "slide-up", "slide-left", "slide-right",
@@ -692,6 +692,34 @@ def main():
         cr.paint()
         cr.restore()
 
+    def fx_blooddrip(el, cr):
+        # Blood drops forming at the top edge and trickling down. Always red (blood),
+        # or the fx color if one is set.
+        bc = fxcol if fxcol else (1.0, 0.16, 0.16)
+        dark = (0.32, 0.0, 0.0)
+        xs = (0.12, 0.30, 0.50, 0.68, 0.86)
+        period = 2800.0
+        w_ = 4.0 * rscale
+        for i, fxp in enumerate(xs):
+            prog = ((el + i * 560.0) % period) / period
+            if prog < 0.1:
+                a = prog / 0.1
+            elif prog > 0.9:
+                a = max(0.0, (1.0 - prog) / 0.1)
+            else:
+                a = 0.95
+            x = fxp * card_w
+            top = -2.0 * rscale + (prog ** 1.5) * (card_h + 4.0 * rscale)  # accelerating fall
+            drop_h = (16.0 if prog < 0.55 else 9.0) * rscale
+            grad = cairo.LinearGradient(0, top, 0, top + drop_h)
+            grad.add_color_stop_rgba(0.0, dark[0], dark[1], dark[2], a)
+            grad.add_color_stop_rgba(1.0, bc[0], bc[1], bc[2], a)
+            cr.save()
+            cr.set_source(grad)
+            _rrect_path(cr, x - w_ / 2.0, top, w_, drop_h, w_ / 2.0)
+            cr.fill()
+            cr.restore()
+
     # Ambient on the left accent bar --------------------------------------------
     def fx_bar(el, cr, mode):
         ac0, ac1, ac2 = accent                                # exact theme accent
@@ -792,6 +820,8 @@ def main():
                 fx_particles(el, cr, spark_pos, 2 * math.pi / 1.7, "dot")
             if "comet" in fxset:
                 fx_comet(el, cr)
+            if "blooddrip" in fxset:
+                fx_blooddrip(el, cr)
             if ambient in ("flow", "flow-pulse"):
                 fx_bar(el, cr, "flow")
             if ambient in ("pulse", "flow-pulse"):
@@ -833,6 +863,8 @@ def main():
                 fx_particles(t, dc, spark_pos, 2 * math.pi / 1.7, "dot")
             if "comet" in fxset:
                 fx_comet(t, dc)
+            if "blooddrip" in fxset:
+                fx_blooddrip(t, dc)
             if ambient in ("flow", "flow-pulse"):
                 fx_bar(t, dc, "flow")
             if ambient in ("pulse", "flow-pulse"):

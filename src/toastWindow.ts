@@ -281,6 +281,14 @@ function buildParts(data: ToastData, opts: ToastOptions, opaque = false, isStati
     fxCss += `.conf{position:absolute;top:-10px;width:6px;height:9px;z-index:4;pointer-events:none;opacity:0;animation:conf 1.5s ease-in both;}@keyframes conf{0%{top:-10px;opacity:0;transform:rotate(0);}10%{opacity:1;}100%{top:112%;opacity:0;transform:rotate(380deg);}}`;
     fxEls += cx.map((x, i) => `<span class="conf" style="left:${x}%;background:${cols[i % cols.length]};animation-delay:${(i * 0.07).toFixed(2)}s;"></span>`).join('');
   }
+  if (has('blooddrip') && !isStatic) {
+    // Blood drops forming at the top edge and trickling down. Always red (blood),
+    // or the fx color if one is set.
+    const bBot = fxCol || '#ff2a2a';
+    const bx = [12, 30, 50, 68, 86];
+    fxCss += `.blood{position:absolute;top:-2px;width:4px;z-index:3;pointer-events:none;border-radius:0 0 60% 60%;background:linear-gradient(180deg,#5a0000,${bBot});box-shadow:0 0 5px ${hexToRgba(bBot, 0.6)};animation:bdrip 2.8s ease-in infinite;}@keyframes bdrip{0%{height:0;top:-2px;opacity:0;}10%{opacity:.95;}55%{height:16px;}100%{height:8px;top:100%;opacity:0;}}`;
+    fxEls += bx.map((x, i) => `<span class="blood" style="left:${x}%;animation-delay:${(i * 0.5).toFixed(2)}s;"></span>`).join('');
+  }
 
   const style = `
   .wrap{display:flex;align-items:center;justify-content:center;min-height:100%;padding:14px;box-sizing:border-box;font-family:${fontStack};}

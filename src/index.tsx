@@ -53,6 +53,9 @@ function SettingsPanel() {
 
       <PanelSection title={t('preview.title')}>
         <PanelSectionRow>
+          <div style={{ fontSize: 12, opacity: 0.6, padding: '2px 0 4px' }}>{t('preview.gameNote')}</div>
+        </PanelSectionRow>
+        <PanelSectionRow>
           <ButtonItem layout="below" disabled={!s.enabled} onClick={() => watcher?.simulate(false)}>
             {t('preview.common')}
           </ButtonItem>
