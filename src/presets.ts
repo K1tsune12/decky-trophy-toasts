@@ -59,7 +59,7 @@ const CURATED: Preset[] = [
   {
     id: 'vampyr', name: 'Vampyr', builtin: true,
     common: tier('vampyr', 'fade', 'pulse', ['accentbar', 'stamp', 'comet', 'edgepulse'], '', 'cinzel', 'red'),
-    rare: tier('vampyr', 'glow-in', 'pulse', ['accentbar', 'stamp', 'shockwave', 'comet', 'glint', 'flash', 'glowline', 'stars'], '', 'cinzel', 'red'),
+    rare: tier('vampyr', 'glow-in', 'pulse', ['accentbar', 'stamp', 'shockwave', 'comet', 'glint', 'flash', 'glowline', 'blooddrip'], '', 'cinzel', 'red'),
   },
   {
     id: 'halloween', name: 'Halloween', builtin: true,
