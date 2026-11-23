@@ -47,6 +47,36 @@ function fmtPct(pct: number): string {
 
 interface Resolved { strID?: string; name: string; icon?: string; flAchieved?: number; desc?: string }
 
+// Steam sends the same notification for an achievement *progress* update ("5/10",
+// IndicateAchievementProgress) as for an unlock: same event, same toast type. The only
+// difference is that the achievement is not achieved yet. Those are not ours to show.
+let lastProgressAt = 0;
+
+/** The achievement carried by an unlock/progress event ({unAppID, achievement:{…}}). */
+function eventAchievement(p: any): any {
+  return p && typeof p.achievement === 'object' && p.achievement ? p.achievement : p;
+}
+
+function isProgressEvent(p: any): boolean {
+  return eventAchievement(p)?.bAchieved === false;
+}
+
+/** Whether the notification Steam is about to toast is a progress update. */
+function isProgressToast(notif: any): boolean {
+  try {
+    const d = notif?.data;
+    const o = d && typeof d.toObject === 'function' ? d.toObject() : null;
+    if (o && typeof o === 'object') {
+      for (const k of Object.keys(o)) {
+        if (/achieved$/i.test(k) && typeof o[k] === 'boolean') return o[k] === false;
+      }
+    }
+    const arr = d?.array;                       // protobuf storage: [id, appid, name, desc, image, achieved, …]
+    if (Array.isArray(arr) && typeof arr[5] === 'boolean') return arr[5] === false;
+  } catch { /* fall through */ }
+  return Date.now() - lastProgressAt < 400;      // the event fires right before the toast
+}
+
 export class AchievementWatcher {
   private reg?: { unregister: () => void };
   private appReg?: { unregister: () => void };
@@ -220,7 +250,8 @@ export class AchievementWatcher {
           try {
             const s = getSettings();
             const notif = args.find((a) => a && typeof a === 'object' && 'eType' in a);
-            if (live && s.enabled && s.suppressNative && isOverlayHealthy() && notif?.eType === ACHIEVEMENT_ETYPE) return false;
+            if (live && s.enabled && s.suppressNative && isOverlayHealthy() && notif?.eType === ACHIEVEMENT_ETYPE
+              && !isProgressToast(notif)) return false;
           } catch { /* ignore */ }
           return orig.apply(this, args);
         };
@@ -239,7 +270,8 @@ export class AchievementWatcher {
         const patched = function (this: any, ...args: any[]) {
           try {
             const s = getSettings();
-            if (live && s.enabled && s.suppressNative && isOverlayHealthy() && args?.[0]?.eType === ACHIEVEMENT_ETYPE) return;
+            if (live && s.enabled && s.suppressNative && isOverlayHealthy() && args?.[0]?.eType === ACHIEVEMENT_ETYPE
+              && !isProgressToast(args[0])) return;
           } catch { /* ignore */ }
           return orig.apply(this, args);
         };
@@ -252,6 +284,8 @@ export class AchievementWatcher {
 
   private async onUnlock(p: any): Promise<void> {
     const s = getSettings();
+    // A progress update, not an unlock: leave it to Steam's own progress toast.
+    if (isProgressEvent(p)) { lastProgressAt = Date.now(); return; }
     if (!s.enabled) return;
     const appid: number = p?.unAppID ?? p?.nAppID ?? p?.appid ?? 0;
     if (s.debug) console.log('[achievement-toasts] unlock event', appid, p);
@@ -293,7 +327,10 @@ export class AchievementWatcher {
     }
   }
 
-  private async resolveAchievement(appid: number, p: any): Promise<Resolved> {
+  private async resolveAchievement(appid: number, ev: any): Promise<Resolved> {
+    // The event carries the achievement itself ({unAppID, achievement:{strID, strName,
+    // strImage, …}}), so two unlocks in the same instant each get their own data.
+    const p = eventAchievement(ev);
     const pName = p?.strName || p?.strDisplayName || p?.display_name;
     const pImg = p?.strImage || p?.strIcon || p?.icon;
     const pID = p?.strID || p?.achievement_id || p?.strAchievementID || p?.strApiName;
@@ -341,9 +378,19 @@ export class AchievementWatcher {
     } catch { /* optional */ }
   }
 
+  /** The game in front. Steam's own idea of it wins: a second app starting or
+   *  stopping in the background (a launcher, a tool) must not change it. */
+  private activeAppId(): number {
+    try {
+      const main = Number(w.SteamUIStore?.MainRunningAppID ?? w.SteamUIStore?.MainRunningApp?.appid ?? 0);
+      if (main) return main;
+    } catch { /* fall back */ }
+    return this.currentAppId;
+  }
+
   /** The currently-running game (for the per-game preset UI), or null. */
   currentGame(): { appid: number; name: string } | null {
-    const appid = this.currentAppId;
+    const appid = this.activeAppId();
     if (!appid) return null;
     let name = '';
     try { name = (w.appStore?.GetAppOverviewByAppID?.(appid)?.display_name as string) || ''; } catch { /* ignore */ }
@@ -358,7 +405,7 @@ export class AchievementWatcher {
     const name = rare ? t('toast.sampleRare') : t('toast.sampleCommon');
     const data = this.toData(name, undefined, pct, rare ? t('toast.sampleDescRare') : t('toast.sampleDescCommon'));
     // Use the running game's profile (if any) so per-game looks/sounds can be tested.
-    const opts = this.opts(rare, s, this.currentAppId || undefined);
+    const opts = this.opts(rare, s, this.activeAppId() || undefined);
     enqueueOverlay(data, opts, () => { void ensureFont(opts.font).then(() => this.toast.show(data, opts)); });
   }
 

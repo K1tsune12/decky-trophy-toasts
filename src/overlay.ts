@@ -330,6 +330,9 @@ let processing = false;
 let current: { shownAt: number; endAt: number } | null = null;
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const EXIT_MS = 340;           // the helper's exit animation (CSS kf_out)
+// From launch to the helper's first frame on screen (python + GTK start-up, measured
+// on a Deck). The sound and the queue clock start then, not at launch.
+const HELPER_STARTUP_MS = 400;
 
 /** With more unlocks waiting, cut the on-screen toast down to the user's
  *  "seconds per toast in a queue" (never below what it has already shown). */
@@ -352,15 +355,17 @@ async function processQueue(): Promise<void> {
         const card = await renderCard(item.data, item.opts);
         if (card && (await pushOverlay(card, item.opts))) {
           shown = true;
-          try { item.opts.onShow?.(); } catch { /* ignore */ }
-          const natural = Date.now() + Math.max(2000, item.opts.durationMs);
-          current = { shownAt: Date.now(), endAt: natural };
+          const onShow = item.opts.onShow;
+          if (onShow) setTimeout(() => { try { onShow(); } catch { /* ignore */ } }, HELPER_STARTUP_MS);
+          const shownAt = Date.now() + HELPER_STARTUP_MS;
+          const natural = shownAt + Math.max(2000, item.opts.durationMs);
+          current = { shownAt, endAt: natural };
           shortenForQueue();
           let checked = false;
           while (current && Date.now() < current.endAt) {
             await sleep(100);
             // A helper that died right after launch never showed anything.
-            if (!checked && Date.now() - current.shownAt > 900) {
+            if (!checked && Date.now() - current.shownAt > 500) {
               checked = true;
               let alive = true;
               try { alive = !!((await call('overlay_alive')) as any)?.alive; } catch { /* assume ok */ }
@@ -374,7 +379,7 @@ async function processQueue(): Promise<void> {
               try { await call('dismiss_overlay'); } catch { /* ignore */ }
               await sleep(EXIT_MS + 110);
             } else {
-              await sleep(450);
+              await sleep(120);
             }
           } else {
             overlayHealthy = false;
