@@ -63,10 +63,11 @@ function encodeFlags(
     ctx.fillRect(i * FLAG_BLOCK, ch, FLAG_BLOCK, FLAG_ROWS);
   });
   const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
-  // The exact accent color (top of the accent-bar gradient), so the helper never
-  // has to GUESS it by sampling a pixel (which mis-read a white bar as gold).
-  const [accA] = resolveAccent(getTheme(opts.themeId), opts.accentId);
+  // Both accent-gradient stops, so helper effects use the theme's exact colours
+  // (never guessed) and can match the richer deep tone the rest of the card uses.
+  const [accA, accB] = resolveAccent(getTheme(opts.themeId), opts.accentId);
   const [ar, ag, ab] = hexRgb(accA);
+  const [br, bgc, bb] = hexRgb(accB || accA);
   // The user's "effect color" override (sparkles/stars/confetti/flash). '' = each
   // effect's own default; (0,0,0) tells the helper "unset, use defaults".
   const fxHex = resolveFxColor(opts.fxColor || '');
@@ -76,8 +77,9 @@ function encodeFlags(
     Math.min(40, Math.round(getTheme(opts.themeId).radius)), // 19: corner radius
     icon.x, icon.y, icon.sz,                                 // 20,21,22: icon box
     Math.max(0, ANIM_IDS.indexOf(opts.animId)),              // 23: entrance anim
-    ar, ag, ab,                                              // 24,25,26: accent rgb
+    ar, ag, ab,                                              // 24,25,26: accent A rgb
     fr, fg, fb,                                              // 27,28,29: fx color rgb
+    br, bgc, bb,                                             // 30,31,32: accent B rgb
   ];
   nums.forEach((val, j) => {
     ctx.fillStyle = `rgb(${clamp(val)},0,0)`;

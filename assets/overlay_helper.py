@@ -76,10 +76,11 @@ def read_flags(pixbuf, h):
         icon = (num(rblock + 1), num(rblock + 2), num(rblock + 3))  # 20,21,22: x,y,size
         ai = num(rblock + 4)                          # 23: entrance anim index
         anim = ANIM_IDS[ai] if ai < len(ANIM_IDS) else "slide-down"
-        acc = (num(rblock + 5), num(rblock + 6), num(rblock + 7))  # 24,25,26: accent rgb
+        acc = (num(rblock + 5), num(rblock + 6), num(rblock + 7))  # 24,25,26: accent A
         fxc = (num(rblock + 8), num(rblock + 9), num(rblock + 10))  # 27,28,29: fx color
+        accb = (num(rblock + 11), num(rblock + 12), num(rblock + 13))  # 30,31,32: accent B
         return {"magic": True, "fx": fx, "ambient": ambient, "radius": radius,
-                "icon": icon, "anim": anim, "accent": acc, "fxcolor": fxc}
+                "icon": icon, "anim": anim, "accent": acc, "fxcolor": fxc, "accentb": accb}
     except Exception:  # noqa: BLE001  pylint: disable=broad-except
         return {}
 
@@ -127,6 +128,76 @@ def anchor_xy(anchor, margin, sw, sh, cw, ch):
     else:  # top-*
         y = margin + 12  # clear the status strip
     return x, y
+
+
+def rr_perimeter(x, y, w, h, r, step=3.0):
+    """Densely sample a rounded-rect outline (clockwise) -> [(px,py,cumlen)], total.
+    Used to draw the glowline's travelling segment as an explicit polyline that
+    wraps smoothly across the start/end seam (cairo dashing on a closed path does
+    not, which made the segment jump at the corner)."""
+    r = max(0.0, min(r, w / 2.0, h / 2.0))
+    raw = []
+
+    def line(x0, y0, x1, y1):
+        d = math.hypot(x1 - x0, y1 - y0)
+        n = max(1, int(d / step))
+        for i in range(n + 1):
+            t = i / n
+            raw.append((x0 + (x1 - x0) * t, y0 + (y1 - y0) * t))
+
+    def arc(cx, cy, a0, a1):
+        al = abs(a1 - a0) * r
+        n = max(1, int(al / step))
+        for i in range(n + 1):
+            a = a0 + (a1 - a0) * i / n
+            raw.append((cx + r * math.cos(a), cy + r * math.sin(a)))
+
+    line(x + r, y, x + w - r, y)                       # top edge
+    arc(x + w - r, y + r, -math.pi / 2, 0)             # top-right
+    line(x + w, y + r, x + w, y + h - r)               # right edge
+    arc(x + w - r, y + h - r, 0, math.pi / 2)          # bottom-right
+    line(x + w - r, y + h, x + r, y + h)               # bottom edge
+    arc(x + r, y + h - r, math.pi / 2, math.pi)        # bottom-left
+    line(x, y + h - r, x, y + r)                        # left edge
+    arc(x + r, y + r, math.pi, 1.5 * math.pi)          # top-left
+
+    pts = []
+    for (px, py) in raw:
+        if pts:
+            lx, ly, ll = pts[-1]
+            d = math.hypot(px - lx, py - ly)
+            if d < 0.01:
+                continue
+            pts.append((px, py, ll + d))
+        else:
+            pts.append((px, py, 0.0))
+    total = pts[-1][2] if pts else 0.0
+    return pts, total
+
+
+def poly_path(cr, pts):
+    """Trace a polyline (list of (x,y[,...])) as the current cairo path."""
+    first = True
+    for p in pts:
+        if first:
+            cr.move_to(p[0], p[1])
+            first = False
+        else:
+            cr.line_to(p[0], p[1])
+
+
+def window_poly(pts, total, a, seg):
+    """Points of the perimeter within arc-length [a, a+seg], wrapping the seam."""
+    b = a + seg
+    out = []
+    for (px, py, cl) in pts:
+        if a <= cl <= b:
+            out.append((cl, px, py))
+        c2 = cl + total
+        if a <= c2 <= b:
+            out.append((c2, px, py))
+    out.sort()
+    return [(p[1], p[2]) for p in out]
 
 
 def sample_accent(pixbuf):
@@ -204,6 +275,11 @@ def main():
     _fx = flags.get("fxcolor", (0, 0, 0))
     fxcol = ((_fx[0] / 255.0, _fx[1] / 255.0, _fx[2] / 255.0)
              if (_fx[0] or _fx[1] or _fx[2]) else None)
+    # Deep accent-gradient stop (richer tone the rest of the card uses); = accent
+    # when not provided.
+    _ab = flags.get("accentb", (0, 0, 0))
+    accent_b = ((_ab[0] / 255.0, _ab[1] / 255.0, _ab[2] / 255.0)
+                if (_ab[0] or _ab[1] or _ab[2]) else accent)
     # The card is rendered at RENDER_SCALE=2 (css->sheet), then shown at card_w.
     rscale = (2.0 * card_w / sheet_w) if sheet_w else 1.0
     disp_radius = flags.get("radius", 0) * rscale
@@ -270,10 +346,11 @@ def main():
     anim_id = flags.get("anim", "slide-down")
 
     # --- Live effects drawn in cairo at ~30fps over the static card ---
-    ar, ag, ab = accent
-    acc = (min(1.0, ar + 0.3), min(1.0, ag + 0.25), min(1.0, ab + 0.12))
+    # Effects use the real theme `accent` directly (rich/saturated); brightening it
+    # toward white washed saturated colors (e.g. gold) out to a dull pale yellow.
     fxset = flags.get("fx", set())
     ambient = flags.get("ambient", "")
+    glow_cache = {}   # perimeter points for the glowline (computed once)
     spark_pos = [(0.14, 0.30), (0.30, 0.70), (0.45, 0.20), (0.58, 0.76),
                  (0.70, 0.36), (0.82, 0.62), (0.90, 0.26), (0.24, 0.52)]
     star_pos = [(0.10, 0.30), (0.20, 0.68), (0.33, 0.22), (0.44, 0.78), (0.55, 0.32),
@@ -351,42 +428,78 @@ def main():
             return
         _rrect_path(cr, x, y, w, h, r)
         cr.set_line_width(2.2)
-        cr.set_source_rgba(acc[0], acc[1], acc[2], 0.85)
+        cr.set_source_rgba(accent[0], accent[1], accent[2], 0.85)
         cr.stroke()
 
     def fx_glowline(el, cr):
         x, y, w, h, r = _edge()
         if w <= 0 or h <= 0:
             return
-        per = 2 * (w + h)
-        seg = per * 0.22                                   # CSS dasharray 22/78
-        offset = -((el % 2300.0) / 2300.0) * per           # gline 2.3s
-        bright = (min(1.0, acc[0] + 0.15), min(1.0, acc[1] + 0.15), min(1.0, acc[2] + 0.15))
+        if "pts" not in glow_cache:
+            pts, total = rr_perimeter(x, y, w, h, r)
+            glow_cache["pts"] = pts
+            glow_cache["total"] = total
+        pts = glow_cache["pts"]
+        total = glow_cache["total"]
+        if total <= 0:
+            return
+        # Match the rest of the card's gold: the GLOW uses the deep accent stop
+        # (accent_b, like CSS gbase), the bright running core uses the light stop
+        # (accent, like CSS grun). Full saturation, never whitened -> vivid, not faded.
+        glow = accent_b
+        core = accent
+        seg = total * 0.22                                 # CSS dasharray 22/78
+        head = ((el % 2300.0) / 2300.0) * total            # clockwise travel (gline 2.3s)
+        wpts = window_poly(pts, total, head, seg)          # wraps the seam smoothly
+
+        # Diffuse glow via a REAL blur: draw the line into a low-res surface, then
+        # scale it back up with interpolation -> a soft, spread-out light (layered
+        # hard strokes always looked too solid). A thin crisp core goes on top.
+        margin = 34.0
+        down = 7                                            # bigger = more diffuse
+        sw = max(1, int(round((card_w + 2 * margin) / down)))
+        sh = max(1, int(round((card_h + 2 * margin) / down)))
+        gsurf = cairo.ImageSurface(cairo.FORMAT_ARGB32, sw, sh)
+        gx = cairo.Context(gsurf)
+        gx.scale(1.0 / down, 1.0 / down)
+        gx.translate(margin, margin)                        # card coords -> surface
+        gx.set_line_join(cairo.LINE_JOIN_ROUND)
+        gx.set_line_cap(cairo.LINE_CAP_ROUND)
+        poly_path(gx, pts)                                  # faint continuous halo
+        gx.set_line_width(7.0)
+        gx.set_source_rgba(glow[0], glow[1], glow[2], 0.5)
+        gx.stroke()
+        if len(wpts) >= 2:                                  # brighter travelling blob
+            poly_path(gx, wpts)
+            gx.set_line_width(17.0)
+            gx.set_source_rgba(glow[0], glow[1], glow[2], 0.85)
+            gx.stroke()
+            poly_path(gx, wpts)
+            gx.set_line_width(6.0)
+            gx.set_source_rgba(core[0], core[1], core[2], 1.0)
+            gx.stroke()
+        gsurf.flush()
         cr.save()
-        # Continuous base line with a soft halo (CSS gbase drop-shadow).
-        for width, alpha in ((6.0, 0.08), (3.4, 0.16)):
-            _rrect_path(cr, x, y, w, h, r)
-            cr.set_line_width(width * rscale)
-            cr.set_source_rgba(acc[0], acc[1], acc[2], alpha)
-            cr.stroke()
-        _rrect_path(cr, x, y, w, h, r)
-        cr.set_line_width(1.8)
-        cr.set_source_rgba(acc[0], acc[1], acc[2], 0.5)
+        cr.translate(-margin, -margin)
+        cr.scale(down, down)
+        cr.set_source_surface(gsurf, 0, 0)
+        cr.get_source().set_filter(cairo.FILTER_GOOD)       # smooth upscale = blur
+        cr.paint_with_alpha(0.9)
+        cr.restore()
+
+        # Thin crisp line on top so the outline itself stays defined.
+        cr.save()
+        cr.set_line_join(cairo.LINE_JOIN_ROUND)
+        cr.set_line_cap(cairo.LINE_CAP_ROUND)
+        poly_path(cr, pts)
+        cr.set_line_width(1.5)
+        cr.set_source_rgba(glow[0], glow[1], glow[2], 0.45)
         cr.stroke()
-        # Running bright segment with a STRONG outward bloom expanding past the line
-        # (CSS grun drop-shadow 4/10/18px) — wide, low-alpha layers under a bright core.
-        for width, alpha in ((18.0, 0.07), (12.0, 0.12), (7.0, 0.22), (4.0, 0.42)):
-            _rrect_path(cr, x, y, w, h, r)
-            cr.set_line_width(width * rscale)
-            cr.set_dash([seg, per], offset)
-            cr.set_source_rgba(acc[0], acc[1], acc[2], alpha)
+        if len(wpts) >= 2:
+            poly_path(cr, wpts)
+            cr.set_line_width(2.2)
+            cr.set_source_rgba(core[0], core[1], core[2], 0.95)
             cr.stroke()
-        _rrect_path(cr, x, y, w, h, r)
-        cr.set_line_width(2.3)
-        cr.set_dash([seg, per], offset)
-        cr.set_source_rgba(bright[0], bright[1], bright[2], 0.98)
-        cr.stroke()
-        cr.set_dash([], 0)
         cr.restore()
 
     def fx_edgepulse(el, cr):
@@ -396,11 +509,11 @@ def main():
         a = 0.4 + 0.55 * (0.5 + 0.5 * math.sin(el / 1000.0 * (2 * math.pi / 1.9)))  # epulse 1.9s
         _rrect_path(cr, x, y, w, h, r)
         cr.set_line_width(4.0)
-        cr.set_source_rgba(acc[0], acc[1], acc[2], 0.22)
+        cr.set_source_rgba(accent[0], accent[1], accent[2], 0.22)
         cr.stroke()
         _rrect_path(cr, x, y, w, h, r)
         cr.set_line_width(2.4)
-        cr.set_source_rgba(acc[0], acc[1], acc[2], a)
+        cr.set_source_rgba(accent[0], accent[1], accent[2], a)
         cr.stroke()
 
     def fx_edgerainbow(el, cr):
@@ -743,6 +856,23 @@ def main():
 
     _dump_frame("/tmp/ktt_frame.png", 1500.0, False)   # hold phase
     _dump_frame("/tmp/ktt_enter.png", 330.0, True)      # entrance one-shots
+
+    try:  # debug: glowline at several positions (verify smooth seam wrap + bloom)
+        if "glowline" in fxset:
+            times = (100.0, 900.0, 1700.0, 2050.0, 2250.0)
+            strip = cairo.ImageSurface(cairo.FORMAT_ARGB32,
+                                       int(card_w), int(card_h) * len(times) + 10 * (len(times) - 1))
+            sc = cairo.Context(strip)
+            for i, t in enumerate(times):
+                sc.save()
+                sc.translate(0, i * (card_h + 10))
+                sc.set_source_surface(card0, 0, 0)
+                sc.paint()
+                fx_glowline(t, sc)
+                sc.restore()
+            strip.write_to_png("/tmp/ktt_gl.png")
+    except Exception:  # noqa: BLE001  pylint: disable=broad-except
+        pass
 
     win.connect("draw", on_draw)
     win.connect("destroy", Gtk.main_quit)
