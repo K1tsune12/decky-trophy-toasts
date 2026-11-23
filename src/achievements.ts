@@ -73,7 +73,11 @@ export class AchievementWatcher {
     try {
       this.appReg = w.SteamClient?.GameSessions?.RegisterForAppLifetimeNotifications?.((u: any) => {
         try {
-          if (u?.unAppID && u?.bRunning) { this.currentAppId = u.unAppID; void this.ensurePct(u.unAppID); }
+          if (u?.unAppID && u?.bRunning) {
+            this.currentAppId = u.unAppID;
+            void this.ensurePct(u.unAppID);
+            this.preloadGameSounds(u.unAppID);
+          }
           else if (u?.unAppID && !u?.bRunning && u.unAppID === this.currentAppId) { this.currentAppId = 0; }
         } catch { /* ignore */ }
       });
@@ -229,9 +233,22 @@ export class AchievementWatcher {
   }
 
   private opts(rare: boolean, s: AchSettings, appid?: number): ToastOptions {
-    const o = buildOpts(s, rare, resolveLook(s, rare, appid));
-    o.onShow = () => { void this.sound.play(rare); };
+    // The resolved look carries the sound too, so a per-game preset can use its own.
+    const look = resolveLook(s, rare, appid);
+    const o = buildOpts(s, rare, look);
+    o.onShow = () => { void this.sound.playValue(look.sound); };
     return o;
+  }
+
+  /** Warm the sounds a game's per-game presets use, so its first unlock plays instantly. */
+  private preloadGameSounds(appid: number): void {
+    try {
+      const s = getSettings();
+      for (const rare of [false, true]) {
+        const snd = resolveLook(s, rare, appid).sound;
+        if (snd?.enabled && snd.path) void this.sound.preload(snd.path);
+      }
+    } catch { /* optional */ }
   }
 
   /** The currently-running game (for the per-game preset UI), or null. */
@@ -250,7 +267,8 @@ export class AchievementWatcher {
     const pct = rare ? 2.3 : 47.5;
     const name = rare ? t('toast.sampleRare') : t('toast.sampleCommon');
     const data = this.toData(name, undefined, pct);
-    const opts = this.opts(rare, s);
+    // Use the running game's profile (if any) so per-game looks/sounds can be tested.
+    const opts = this.opts(rare, s, this.currentAppId || undefined);
     enqueueOverlay(data, opts, () => this.toast.show(data, opts));
   }
 

@@ -56,6 +56,18 @@ function presetSwatch(p: Preset): string {
 }
 
 /** Short tag for a saved preset's scope. */
+/** "♪ name" of the sound(s) a saved preset carries ('' if none). */
+function presetSoundTag(p: Preset): string {
+  const name = (sl?: { enabled: boolean; path: string }) => {
+    if (!sl) return '';
+    if (!sl.enabled || !sl.path) return '—';
+    const v = sl.path.startsWith('builtin:') ? sl.path.slice(8) : sl.path.split(/[\/]/).pop() || sl.path;
+    return v.replace(/\.[a-z0-9]+$/i, '');
+  };
+  const parts = [name(p.common?.sound), name(p.rare?.sound)].filter(Boolean);
+  return parts.length ? ` · ♪ ${parts.join(' / ')}` : '';
+}
+
 function presetScopeTag(p: Preset): string {
   if (p.scope === 'both') return t('presets.tagMaster');
   if (p.scope === 'rare') return t('presets.tagRare');
@@ -337,7 +349,7 @@ export function TrophyStudio() {
                 <span style={{ width: 14, height: 14, borderRadius: 4, flex: '0 0 auto', background: presetSwatch(p) }} />
                 <div style={{ minWidth: 0, overflow: 'hidden' }}>
                   <div style={{ fontSize: 14, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
-                  <div style={{ fontSize: 11, opacity: 0.6 }}>{presetScopeTag(p)}</div>
+                  <div style={{ fontSize: 11, opacity: 0.6 }}>{presetScopeTag(p)}{presetSoundTag(p)}</div>
                 </div>
               </div>
               <Focusable style={{ display: 'flex', gap: 6, flex: '0 0 auto' }}>

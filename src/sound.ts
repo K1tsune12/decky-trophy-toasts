@@ -51,6 +51,13 @@ export class SoundPlayer {
     if (uri) this.playUri(uri, effectiveVolume(slot.volume));
   }
 
+  /** Play a given slot value (the resolved per-game / preset sound). */
+  async playValue(slot?: SoundSlot): Promise<void> {
+    if (!slot || !slot.enabled || !slot.path) return;
+    const uri = this.cache.get(slot.path) ?? (await this.preload(slot.path));
+    if (uri) this.playUri(uri, effectiveVolume(slot.volume));
+  }
+
   /** Play a specific slot regardless of the rare flag (used by the Test buttons). */
   async playSlot(which: 'soundCommon' | 'soundRare'): Promise<void> {
     const slot = getSettings()[which];

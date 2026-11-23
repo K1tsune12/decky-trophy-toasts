@@ -5,7 +5,7 @@
 // per game (resolved at unlock time by appid, with the default as fallback).
 
 import { tr } from './i18n';
-import { AchSettings, getSettings } from './settings';
+import { AchSettings, SoundSlot, getSettings } from './settings';
 import { ToastOptions } from './toastWindow';
 import { THEMES, defaultAmbient, defaultFx, sanitizeFx } from './themes';
 
@@ -18,6 +18,9 @@ export interface LookTier {
   font: string;
   fxColor: string;
   fx: string[];
+  /** The tier's sound (file, on/off, volume). Saved presets capture it; built-ins
+   *  leave it unset (= keep the global sound for that tier). */
+  sound?: SoundSlot;
 }
 
 export interface Preset {
@@ -149,6 +152,7 @@ export function tierLook(s: AchSettings, rare: boolean): LookTier {
     font: rare ? s.fontRare : s.fontCommon,
     fxColor: rare ? s.fxColorRare : s.fxColorCommon,
     fx: rare ? s.fxRare : s.fxCommon,
+    sound: rare ? s.soundRare : s.soundCommon,
   };
 }
 
@@ -160,7 +164,8 @@ export function resolveLook(s: AchSettings, rare: boolean, appid?: number | stri
     if (id) {
       const p = findPreset(id);
       const look = p && presetLook(p, rare);
-      if (look) return look;
+      // A preset without a sound keeps the global sound for that tier.
+      if (look) return { ...look, sound: look.sound ?? (rare ? s.soundRare : s.soundCommon) };
     }
   }
   return tierLook(s, rare);
@@ -194,7 +199,10 @@ export function buildOpts(s: AchSettings, rare: boolean, look: LookTier): ToastO
 export function presetPatchTier(p: Preset, rare: boolean): Partial<AchSettings> {
   const look = presetLook(p, rare);
   if (!look) return {};
-  return rare
+  const patch: Partial<AchSettings> = rare
     ? { themeRare: look.theme, animRare: look.anim, accentRare: look.accent, ambientRare: look.ambient, fontRare: look.font, fxColorRare: look.fxColor, fxRare: look.fx }
     : { themeCommon: look.theme, animCommon: look.anim, accentCommon: look.accent, ambientCommon: look.ambient, fontCommon: look.font, fxColorCommon: look.fxColor, fxCommon: look.fx };
+  // Presets that carry a sound also set that tier's sound.
+  if (look.sound) Object.assign(patch, rare ? { soundRare: { ...look.sound } } : { soundCommon: { ...look.sound } });
+  return patch;
 }
