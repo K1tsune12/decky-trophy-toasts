@@ -11,7 +11,7 @@ import { Dropdown, LanguageSection, LookEditor, SoundSlotControls, useBuiltinSou
 import { t, tr, useLanguage } from './i18n';
 import { Preset, allPresets, buildOpts, presetPatchTier, presetsForTier, tierLook } from './presets';
 import { runtime } from './runtime';
-import { AchSettings, deleteCustomPreset, getSettings, saveMasterPreset, saveSettings, saveTierPreset, setGamePreset } from './settings';
+import { AchSettings, deleteCustomPreset, getSettings, saveMasterPreset, saveSettings, saveTierPreset, setDefaultPreset, setGamePreset } from './settings';
 import { LAYOUTS, POSITIONS, getTheme, resolveAccent } from './themes';
 import { ToastData, renderPreviewHtml } from './toastWindow';
 
@@ -153,6 +153,10 @@ export function TrophyStudio() {
     { data: '', label: t('studio.useDefault') },
     ...presetsForTier(rare).map((p) => ({ data: p.id, label: presetLabel(p) })),
   ];
+  const defaultOptions = (rare: boolean) => [
+    { data: '', label: t('studio.useCustom') },
+    ...presetsForTier(rare).map((p) => ({ data: p.id, label: presetLabel(p) })),
+  ];
   const presetNameById = (id?: string) => (id ? (presets.find((x) => x.id === id)?.name ?? id) : '—');
   const previewW = Math.min(s.width, PREVIEW_W);
   const tierName = rareTier ? t('studio.tierRare') : t('studio.tierCommon');
@@ -261,6 +265,27 @@ export function TrophyStudio() {
       <PanelSection title={t('studio.perGame')}>
         <PanelSectionRow>
           <div style={{ fontSize: 12, opacity: 0.6, paddingBottom: 6 }}>{t('studio.perGameDesc')}</div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75, padding: '6px 0 0' }}>{t('studio.defaultPreset')}</div>
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <div style={{ fontSize: 12, opacity: 0.6, paddingBottom: 2 }}>{t('studio.defaultPresetDesc')}</div>
+        </PanelSectionRow>
+        <Dropdown
+          label={`${t('studio.tierCommon')} — ${t('studio.defaultPreset')}`}
+          value={s.defaultPreset?.common ?? ''}
+          options={defaultOptions(false)}
+          onChange={(v) => setS(setDefaultPreset('common', v))}
+        />
+        <Dropdown
+          label={`${t('studio.tierRare')} — ${t('studio.defaultPreset')}`}
+          value={s.defaultPreset?.rare ?? ''}
+          options={defaultOptions(true)}
+          onChange={(v) => setS(setDefaultPreset('rare', v))}
+        />
+        <PanelSectionRow>
+          <div style={{ fontSize: 12, fontWeight: 700, opacity: 0.75, padding: '10px 0 0' }}>{t('studio.thisGame')}</div>
         </PanelSectionRow>
         {game ? (
           <>

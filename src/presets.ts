@@ -158,15 +158,15 @@ export function tierLook(s: AchSettings, rare: boolean): LookTier {
 
 /** The look to use for a tier, honoring a per-game preset (per tier) when set. */
 export function resolveLook(s: AchSettings, rare: boolean, appid?: number | string): LookTier {
-  if (appid != null && appid !== 0) {
-    const g = s.gamePresets?.[String(appid)];
-    const id = g && (rare ? g.rare : g.common);
-    if (id) {
-      const p = findPreset(id);
-      const look = p && presetLook(p, rare);
-      // A preset without a sound keeps the global sound for that tier.
-      if (look) return { ...look, sound: look.sound ?? (rare ? s.soundRare : s.soundCommon) };
-    }
+  // 1) the game's own preset, 2) the default preset, 3) the Personalize look.
+  const g = appid != null && appid !== 0 ? s.gamePresets?.[String(appid)] : undefined;
+  const dp = s.defaultPreset || {};
+  for (const id of [g && (rare ? g.rare : g.common), rare ? dp.rare : dp.common]) {
+    if (!id) continue;
+    const p = findPreset(id);
+    const look = p && presetLook(p, rare);
+    // A preset without a sound keeps the global sound for that tier.
+    if (look) return { ...look, sound: look.sound ?? (rare ? s.soundRare : s.soundCommon) };
   }
   return tierLook(s, rare);
 }

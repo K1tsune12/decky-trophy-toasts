@@ -82,6 +82,8 @@ export interface AchSettings {
   glass: boolean;
   /** Per-game look override: appid -> { common?, rare? } preset ids (see presets.ts). */
   gamePresets: Record<string, GamePreset>;
+  /** Preset (per tier) for games WITHOUT their own preset ('' = the Personalize look). */
+  defaultPreset: GamePreset;
   /** User-saved presets (per-tier or master). Built-in presets live in presets.ts. */
   customPresets: Preset[];
   /** Log each achievement event to the console (calibration aid). */
@@ -123,6 +125,7 @@ export const DEFAULT_SETTINGS: AchSettings = {
   cardOpacity: 100,
   glass: true,
   gamePresets: {},
+  defaultPreset: {},
   customPresets: [],
   debug: false,
 };
@@ -145,6 +148,7 @@ function hydrate(raw: Partial<AchSettings> & { durationMs?: number }): AchSettin
     soundCommon: { ...DEFAULT_SETTINGS.soundCommon, ...(raw.soundCommon ?? {}) },
     soundRare: { ...DEFAULT_SETTINGS.soundRare, ...(raw.soundRare ?? {}) },
     gamePresets: migrateGamePresets(raw.gamePresets),
+    defaultPreset: raw.defaultPreset && typeof raw.defaultPreset === 'object' ? { ...raw.defaultPreset } : {},
     customPresets: Array.isArray(raw.customPresets) ? raw.customPresets : [],
   };
 }
@@ -204,6 +208,14 @@ export function setGamePreset(appid: number | string, tier: 'common' | 'rare', p
   return saveSettings({ gamePresets: next });
 }
 
+/** Set (or clear, with '') the default preset for ONE tier and persist. */
+export function setDefaultPreset(tier: 'common' | 'rare', presetId: string): AchSettings {
+  const next: GamePreset = { ...getSettings().defaultPreset };
+  if (presetId) next[tier] = presetId;
+  else delete next[tier];
+  return saveSettings({ defaultPreset: next });
+}
+
 let presetSeq = 0;
 function newPresetId(prefix: string): string {
   presetSeq += 1;
@@ -233,7 +245,11 @@ export function deleteCustomPreset(id: string): AchSettings {
     const entry: GamePreset = { common: g.common === id ? undefined : g.common, rare: g.rare === id ? undefined : g.rare };
     if (entry.common || entry.rare) gamePresets[appid] = entry;
   }
-  return saveSettings({ customPresets, gamePresets });
+  const dp = cur.defaultPreset || {};
+  const defaultPreset: GamePreset = {};
+  if (dp.common && dp.common !== id) defaultPreset.common = dp.common;
+  if (dp.rare && dp.rare !== id) defaultPreset.rare = dp.rare;
+  return saveSettings({ customPresets, gamePresets, defaultPreset });
 }
 
 /** Final playback volume (0..1) for a slot volume, after the master volume. */
